@@ -6,7 +6,9 @@ app.use(express.json());
 
 initializeFonts();
 
-app.post('/generate', async (req, res) => {
+// POST /user/:user_id/post/:post_id
+app.post('/user/:user_id/post/:post_id', async (req, res) => {
+    const { user_id, post_id } = req.params;
     const {
         trackName,
         artistName,
@@ -37,6 +39,8 @@ app.post('/generate', async (req, res) => {
         });
 
         res.set('Content-Type', 'image/png');
+        res.set('X-User-Id', user_id);
+        res.set('X-Post-Id', post_id);
         res.send(image);
     } catch (err) {
         res.status(500).json({ error: err.message });
