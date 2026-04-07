@@ -1,22 +1,46 @@
+import express from 'express';
 import { initializeFonts, Bloom } from 'musicard';
-import fs from 'node:fs';
 
-(async () => {
-    initializeFonts();
+const app = express();
+app.use(express.json());
 
-    const musicard = await Bloom({
-        trackName: "Blinding Lights",
-        artistName: "The Weeknd",
-        albumArt: "https://i.scdn.co/image/ab67616d0000b2737569cbe3695608074d9fd389", // Image Path/URL
-        isExplicit: true,
-        timeAdjust: {
-            timeStart: "0:00",
-            timeEnd: "2:54",
-        },
-        progressBar: 10,
-        volumeBar: 70,
-    });
+initializeFonts();
 
-    fs.writeFileSync('example.png', musicard);
-    console.log('✅-> example.png');
-})();
+app.post('/generate', async (req, res) => {
+    const {
+        trackName,
+        artistName,
+        albumArt,
+        isExplicit,
+        timeStart,
+        timeEnd,
+        progressBar,
+        volumeBar,
+    } = req.body;
+
+    if (!trackName || !artistName) {
+        return res.status(400).json({ error: 'trackName and artistName are required' });
+    }
+
+    try {
+        const image = await Bloom({
+            trackName,
+            artistName,
+            albumArt: albumArt || '',
+            isExplicit: isExplicit || false,
+            timeAdjust: {
+                timeStart: timeStart || '0:00',
+                timeEnd: timeEnd || '0:00',
+            },
+            progressBar: progressBar ?? 0,
+            volumeBar: volumeBar ?? 50,
+        });
+
+        res.set('Content-Type', 'image/png');
+        res.send(image);
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+export default app;
