@@ -1,8 +1,24 @@
 import express from 'express';
 import { initializeFonts, Bloom } from 'musicard';
+import mapRouter from './map.js';
 
 const app = express();
-app.use(express.json());
+app.use(express.json({ limit: '2mb' }));
+
+// CORS
+app.use((req, res, next) => {
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+    if (req.method === 'OPTIONS') return res.sendStatus(204);
+    next();
+});
+
+// Request logger
+app.use((req, res, next) => {
+    console.log(`[${new Date().toISOString()}] ${req.method} ${req.url}`);
+    next();
+});
 
 initializeFonts();
 
@@ -45,6 +61,27 @@ app.post('/user/:user_id/post/:post_id', async (req, res) => {
     } catch (err) {
         res.status(500).json({ error: err.message });
     }
+});
+
+// Map routes
+app.use(mapRouter);
+
+// 404 fallback
+app.use((_req, res) => {
+    res.status(404).json({
+        error: 'Not found',
+        endpoints: [
+            'POST /user/:user_id/post/:post_id',
+            'GET  /health',
+            'GET  /render?lat=&lon=&zoom=&width=&height=&bearing=&pitch=&format=&quality=',
+            'POST /render  (JSON body with same params + optional style)',
+            'GET  /style',
+            'GET  /terrain?lat=&lon=&zoom=&pitch=&exaggeration=&width=&height=&format=',
+            'GET  /terrain/style',
+            'GET  /satellite-terrain?lat=&lon=&zoom=&pitch=&exaggeration=&width=&height=&format=',
+            'GET  /satellite-terrain/style',
+        ]
+    });
 });
 
 export default app;

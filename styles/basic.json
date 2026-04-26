@@ -1,0 +1,28 @@
+{
+  "version": 8,
+  "name": "OSM Raster Basic",
+  "sources": {
+    "osm": {
+      "type": "raster",
+      "tiles": ["https://tile.openstreetmap.org/{z}/{x}/{y}.png"],
+      "tileSize": 256,
+      "attribution": "© OpenStreetMap contributors"
+    }
+  },
+  "layers": [
+    {
+      "id": "background",
+      "type": "background",
+      "paint": {
+        "background-color": "#e0e8f0"
+      }
+    },
+    {
+      "id": "osm-tiles",
+      "type": "raster",
+      "source": "osm",
+      "minzoom": 0,
+      "maxzoom": 22
+    }
+  ]
+}
