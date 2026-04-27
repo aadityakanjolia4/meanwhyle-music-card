@@ -98,7 +98,7 @@ function createMap() {
 
                     callback(null, response);
                 })
-                .catch((err) => callback(err));
+                .catch(() => callback());
         },
         ratio: 1
     });
@@ -298,4 +298,5 @@ router.get('/satellite-terrain/style', async (req, res) => {
     catch (err) { res.status(500).json({ error: err.message }); }
 });
 
+export { buildTerrainStyle, buildSatelliteTerrainStyle, renderMap, clamp };
 export default router;
