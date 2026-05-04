@@ -1,4 +1,5 @@
 import { Router } from 'express';
+import { isS3Url, getFromS3 } from './s3.js';
 import mbgl from '@maplibre/maplibre-gl-native';
 import sharp from 'sharp';
 import { readFileSync, existsSync } from 'fs';
@@ -180,6 +181,105 @@ async function buildSatelliteTerrainStyle(exaggeration = 1) {
     return style;
 }
 
+// ─── Marker helpers ───────────────────────────────────────────────────────────
+
+function latLonToPixel(lat, lon, centerLat, centerLon, zoom, width, height) {
+    const scale = 512 * Math.pow(2, zoom);
+    const mercX = (l) => (l + 180) / 360;
+    const mercY = (l) => {
+        const sin = Math.sin(l * Math.PI / 180);
+        return 0.5 - Math.log((1 + sin) / (1 - sin)) / (4 * Math.PI);
+    };
+    return {
+        x: Math.round(width  / 2 + (mercX(lon) - mercX(centerLon)) * scale),
+        y: Math.round(height / 2 + (mercY(lat) - mercY(centerLat)) * scale),
+    };
+}
+
+async function buildMarker(imageBuf, markerWidth = 120) {
+    const markerHeight = Math.round(markerWidth * 4 / 3); // 3:4 ratio
+    const border       = 3;
+    const radius       = 6;
+    const pointerH     = 15;
+    const totalHeight  = markerHeight + pointerH;
+    const innerW       = markerWidth  - border * 2;
+    const innerH       = markerHeight - border * 2;
+    const cx           = markerWidth  / 2;
+
+    // Clip image to inner rounded rectangle
+    const maskPng = await sharp(Buffer.from(
+        `<svg width="${innerW}" height="${innerH}" xmlns="http://www.w3.org/2000/svg"><rect width="${innerW}" height="${innerH}" rx="${radius - border}" fill="white"/></svg>`
+    )).png().toBuffer();
+
+    const clipped = await sharp(imageBuf)
+        .resize(innerW, innerH, { fit: 'cover' })
+        .ensureAlpha()
+        .composite([{ input: maskPng, blend: 'dest-in' }])
+        .png()
+        .toBuffer();
+
+    // SVG frame: red border rect + hollow pointer triangle
+    const framePng = await sharp(Buffer.from(
+        `<svg width="${markerWidth}" height="${totalHeight}" xmlns="http://www.w3.org/2000/svg">
+            <rect x="1.5" y="1.5" width="${markerWidth - 3}" height="${markerHeight - 3}"
+                  rx="${radius}" fill="none" stroke="red" stroke-width="3"/>
+            <polygon points="${cx - 12},${markerHeight} ${cx + 12},${markerHeight} ${cx},${totalHeight}" fill="red"/>
+            <polygon points="${cx - 9},${markerHeight} ${cx + 9},${markerHeight} ${cx},${markerHeight + 12}" fill="white"/>
+        </svg>`
+    )).png().toBuffer();
+
+    const buf = await sharp({
+        create: { width: markerWidth, height: totalHeight, channels: 4, background: { r: 0, g: 0, b: 0, alpha: 0 } }
+    })
+    .composite([
+        { input: clipped,   left: border, top: border },
+        { input: framePng,  left: 0,      top: 0      },
+    ])
+    .png()
+    .toBuffer();
+
+    return { buf, width: markerWidth, height: totalHeight };
+}
+
+export async function compositeMarkers(mapPng, markers, { lat: centerLat, lon: centerLon, zoom, width, height }) {
+    if (!markers || markers.length === 0) return mapPng;
+
+    const composites = [];
+
+    for (const marker of markers) {
+        if (!marker || typeof marker.image !== 'string') continue;
+
+        const { x, y } = latLonToPixel(
+            parseFloat(marker.lat), parseFloat(marker.lon),
+            centerLat, centerLon, zoom, width, height,
+        );
+
+        if (x < 0 || x >= width || y < 0 || y >= height) continue;
+
+        let imageBuf;
+        if (isS3Url(marker.image)) {
+            imageBuf = await getFromS3(marker.image);
+        } else if (marker.image.startsWith('http')) {
+            const resp = await fetch(marker.image);
+            imageBuf = Buffer.from(await resp.arrayBuffer());
+        } else {
+            const b64 = marker.image.includes(',') ? marker.image.split(',')[1] : marker.image;
+            imageBuf = Buffer.from(b64, 'base64');
+        }
+
+const { buf: markerBuf, width: mw, height: mh } = await buildMarker(imageBuf, marker.size ?? 80);
+
+        composites.push({
+            input: markerBuf,
+            left:  Math.max(0, x - Math.floor(mw / 2)),
+            top:   Math.max(0, y - mh),
+        });
+    }
+
+    if (composites.length === 0) return mapPng;
+    return sharp(mapPng).composite(composites).png().toBuffer();
+}
+
 // ─── Shared terrain render handler ───────────────────────────────────────────
 
 async function handleTerrainRender(req, res, styleFn) {
@@ -212,6 +312,40 @@ async function handleTerrainRender(req, res, styleFn) {
             res.set('Cache-Control', 'public, max-age=300');
             res.send(await image.png().toBuffer());
         }
+    } catch (err) {
+        console.error(`[${req.path} error]`, err);
+        res.status(500).json({ error: err.message });
+    }
+}
+
+// ─── POST terrain handler (with markers) ─────────────────────────────────────
+
+async function handleTerrainPost(req, res, styleFn) {
+    try {
+        const body = req.body || {};
+        const lat  = parseFloat(body.lat);
+        const lon  = parseFloat(body.lon);
+        if (isNaN(lat) || isNaN(lon)) {
+            return res.status(400).json({ error: 'lat and lon are required' });
+        }
+
+        const zoom         = clamp(parseFloat(body.zoom         ?? 10),  0,   22);
+        const width        = clamp(parseInt (body.width         ?? 512), 32, 4096);
+        const height       = clamp(parseInt (body.height        ?? 512), 32, 4096);
+        const bearing      = parseFloat(body.bearing ?? 0);
+        const pitch        = clamp(parseFloat(body.pitch        ?? 60),  0,   85);
+        const exaggeration = clamp(parseFloat(body.exaggeration ?? 1),   0,   10);
+        const markers      = Array.isArray(body.markers) ? body.markers.flat() : [];
+
+        const style  = await styleFn(exaggeration);
+        const buffer = await renderMap({ zoom, width, height, center: [lon, lat], bearing, pitch }, style);
+
+        let mapPng = await sharp(buffer, { raw: { width, height, channels: 4 } }).png().toBuffer();
+        mapPng = await compositeMarkers(mapPng, markers, { lat, lon, zoom, width, height });
+
+        res.set('Content-Type', 'image/png');
+        res.set('Cache-Control', 'public, max-age=300');
+        res.send(mapPng);
     } catch (err) {
         console.error(`[${req.path} error]`, err);
         res.status(500).json({ error: err.message });
@@ -287,12 +421,14 @@ router.post('/render', async (req, res) => {
 router.get('/style', (_req, res) => res.json(DEFAULT_STYLE));
 
 router.get('/terrain',           (req, res) => handleTerrainRender(req, res, buildTerrainStyle));
+router.post('/terrain',          (req, res) => handleTerrainPost(req, res, buildTerrainStyle));
 router.get('/terrain/style',     async (req, res) => {
     try { res.json(await buildTerrainStyle(clamp(parseFloat(req.query.exaggeration ?? 1), 0, 10))); }
     catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-router.get('/satellite-terrain', (req, res) => handleTerrainRender(req, res, buildSatelliteTerrainStyle));
+router.get('/satellite-terrain',  (req, res) => handleTerrainRender(req, res, buildSatelliteTerrainStyle));
+router.post('/satellite-terrain', (req, res) => handleTerrainPost(req, res, buildSatelliteTerrainStyle));
 router.get('/satellite-terrain/style', async (req, res) => {
     try { res.json(await buildSatelliteTerrainStyle(clamp(parseFloat(req.query.exaggeration ?? 1), 0, 10))); }
     catch (err) { res.status(500).json({ error: err.message }); }

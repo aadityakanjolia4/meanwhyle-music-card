@@ -1,7 +1,7 @@
 import express from 'express';
 import sharp from 'sharp';
 import { initializeFonts, Bloom } from 'musicard';
-import mapRouter, { buildTerrainStyle, buildSatelliteTerrainStyle, renderMap, clamp } from './map.js';
+import mapRouter, { buildTerrainStyle, buildSatelliteTerrainStyle, renderMap, clamp, compositeMarkers } from './map.js';
 import { uploadToS3 } from './s3.js';
 
 const app = express();
@@ -74,6 +74,7 @@ async function handleCompositePost(req, res, styleFn) {
         timeStart, timeEnd, progressBar, volumeBar,
         lat, lon,
         zoom, pitch, bearing, width, height, exaggeration,
+        markers,
     } = req.body;
 
     if (!trackName || !artistName) {
@@ -109,7 +110,8 @@ async function handleCompositePost(req, res, styleFn) {
             style,
         );
 
-        const mapPng = await sharp(mapRaw, { raw: { width: mapWidth, height: mapHeight, channels: 4 } }).png().toBuffer();
+        let mapPng = await sharp(mapRaw, { raw: { width: mapWidth, height: mapHeight, channels: 4 } }).png().toBuffer();
+        mapPng = await compositeMarkers(mapPng, Array.isArray(markers) ? markers : [], { lat: parseFloat(lat), lon: parseFloat(lon), zoom: mapZoom, width: mapWidth, height: mapHeight });
 
         const [mapUrl, cardUrl] = await Promise.all([
             uploadToS3(mapPng, user_id),
@@ -130,6 +132,68 @@ async function handleCompositePost(req, res, styleFn) {
 app.post('/user/:user_id/post/:post_id/terrain',           (req, res) => handleCompositePost(req, res, buildTerrainStyle));
 app.post('/user/:user_id/post/:post_id/satellite-terrain', (req, res) => handleCompositePost(req, res, buildSatelliteTerrainStyle));
 
+async function handleTerrainMarkerPost(req, res, styleFn) {
+    const { user_id, post_id } = req.params;
+    const {
+        lat, lon,
+        zoom, pitch, bearing, width, height, exaggeration,
+        markers,
+        trackName, artistName, albumArt, isExplicit,
+        timeStart, timeEnd, progressBar, volumeBar,
+    } = req.body;
+
+    if (lat === undefined || lon === undefined) {
+        return res.status(400).json({ error: 'lat and lon are required' });
+    }
+
+    const mapWidth   = clamp(parseInt (width        ?? 800),  32, 4096);
+    const mapHeight  = clamp(parseInt (height       ?? 600),  32, 4096);
+    const mapZoom    = clamp(parseFloat(zoom        ?? 10),    0,   22);
+    const mapPitch   = clamp(parseFloat(pitch       ?? 60),    0,   85);
+    const mapBearing = parseFloat(bearing ?? 0);
+    const mapExagg   = clamp(parseFloat(exaggeration ?? 1),    0,   10);
+
+    try {
+        const hasCard = trackName && artistName;
+
+        const [style, cardBuffer] = await Promise.all([
+            styleFn(mapExagg),
+            hasCard ? Bloom({
+                trackName,
+                artistName,
+                albumArt:    albumArt   || '',
+                isExplicit:  isExplicit || false,
+                timeAdjust:  { timeStart: timeStart || '0:00', timeEnd: timeEnd || '0:00' },
+                progressBar: progressBar ?? 0,
+                volumeBar:   volumeBar   ?? 50,
+            }) : null,
+        ]);
+
+        const mapRaw = await renderMap(
+            { zoom: mapZoom, width: mapWidth, height: mapHeight, center: [parseFloat(lon), parseFloat(lat)], bearing: mapBearing, pitch: mapPitch },
+            style,
+        );
+
+        let mapPng = await sharp(mapRaw, { raw: { width: mapWidth, height: mapHeight, channels: 4 } }).png().toBuffer();
+        mapPng = await compositeMarkers(mapPng, Array.isArray(markers) ? markers : [], { lat: parseFloat(lat), lon: parseFloat(lon), zoom: mapZoom, width: mapWidth, height: mapHeight });
+
+        const uploads = await Promise.all([
+            uploadToS3(mapPng, user_id),
+            cardBuffer ? uploadToS3(cardBuffer, user_id) : null,
+        ]);
+
+        const response = { user_id, post_id, map: uploads[0] };
+        if (uploads[1]) response.card = uploads[1];
+
+        res.json(response);
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+}
+
+app.post('/user/:user_id/post/:post_id/terrain-marker',           (req, res) => handleTerrainMarkerPost(req, res, buildTerrainStyle));
+app.post('/user/:user_id/post/:post_id/satellite-terrain-marker', (req, res) => handleTerrainMarkerPost(req, res, buildSatelliteTerrainStyle));
+
 // Map routes
 app.use(mapRouter);
 
@@ -141,6 +205,8 @@ app.use((_req, res) => {
             'POST /user/:user_id/post/:post_id',
             'POST /user/:user_id/post/:post_id/terrain',
             'POST /user/:user_id/post/:post_id/satellite-terrain',
+            'POST /user/:user_id/post/:post_id/terrain-marker',
+            'POST /user/:user_id/post/:post_id/satellite-terrain-marker',
             'GET  /health',
             'GET  /render?lat=&lon=&zoom=&width=&height=&bearing=&pitch=&format=&quality=',
             'POST /render  (JSON body with same params + optional style)',
