@@ -2,7 +2,11 @@
   "permissions": {
     "allow": [
       "Bash(npm install *)",
-      "Bash(npm ls *)"
+      "Bash(npm ls *)",
+      "Bash(npm info *)",
+      "Bash(python3 -c ' *)",
+      "Bash(python3 -c \"import json,sys; d=json.load\\(sys.stdin\\); print\\('version:', d.get\\('version'\\)\\); deps=d.get\\('dependencies',{}\\); [print\\(k,v\\) for k,v in deps.items\\(\\) if 'xml' in k]\")",
+      "Bash(python3 -c \"import json,sys; d=json.load\\(sys.stdin\\); print\\('version:', d.get\\('version'\\)\\); deps=d.get\\('dependencies',{}\\); [print\\(k,v\\) for k,v in deps.items\\(\\)]\")"
     ]
   }
 }
