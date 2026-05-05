@@ -5,6 +5,7 @@
   "main": "index.js",
   "scripts": {
     "start": "node --env-file=.env server.js",
+    "build": "esbuild api/index.js --bundle --platform=node --format=esm --outfile=dist/index.js --external:sharp --external:@maplibre/maplibre-gl-native --external:@napi-rs/*",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "keywords": [],
@@ -21,5 +22,8 @@
     "musicard": "^3.0.1",
     "sharp": "^0.33.4",
     "tslib": "^2.8.1"
+  },
+  "devDependencies": {
+    "esbuild": "^0.28.0"
   }
 }
