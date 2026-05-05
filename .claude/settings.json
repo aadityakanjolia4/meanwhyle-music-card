@@ -8,7 +8,9 @@
       "Bash(python3 -c \"import json,sys; d=json.load\\(sys.stdin\\); print\\('version:', d.get\\('version'\\)\\); deps=d.get\\('dependencies',{}\\); [print\\(k,v\\) for k,v in deps.items\\(\\) if 'xml' in k]\")",
       "Bash(python3 -c \"import json,sys; d=json.load\\(sys.stdin\\); print\\('version:', d.get\\('version'\\)\\); deps=d.get\\('dependencies',{}\\); [print\\(k,v\\) for k,v in deps.items\\(\\)]\")",
       "Bash(python3 -c \"import json,sys; d=json.load\\(sys.stdin\\); print\\('type:', d.get\\('type',''\\)\\); print\\('main:', d.get\\('main',''\\)\\); deps=d.get\\('dependencies',{}\\); print\\('deps:', list\\(deps.keys\\(\\)\\)\\)\")",
-      "Bash(npm run *)"
+      "Bash(npm run *)",
+      "Bash(python3 -c \"import json,sys; d=json.load\\(sys.stdin\\); print\\('version:', d.get\\('version'\\)\\); print\\('main:', d.get\\('main'\\)\\); print\\('optionalDeps:', list\\(\\(d.get\\('optionalDependencies'\\) or {}\\).keys\\(\\)\\)\\)\")",
+      "Bash(ldd node_modules/@maplibre/maplibre-gl-native/lib/node-v137/mbgl.node)"
     ]
   }
 }
