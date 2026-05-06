@@ -145,6 +145,43 @@ async function buildTerrainStyle(exaggeration = 1) {
     return style;
 }
 
+async function build3dTerrainStyle(exaggeration = 1, isEox = false) {
+    const baseSource = isEox
+        ? {
+            type: 'raster',
+            tiles: ['https://tiles.maps.eox.at/wmts/1.0.0/s2cloudless-2020_3857/default/GoogleMapsCompatible/{z}/{y}/{x}.jpg'],
+            tileSize: 256,
+            attribution: '&copy; EOX IT Services GmbH (Contains modified Copernicus Sentinel data 2020)',
+            maxzoom: 15
+          }
+        : {
+            type: 'raster',
+            tiles: ['https://a.tile.openstreetmap.org/{z}/{x}/{y}.png'],
+            tileSize: 256,
+            attribution: '&copy; OpenStreetMap Contributors',
+            maxzoom: 19
+          };
+
+    return {
+        version: 8,
+        sources: {
+            osm: baseSource,
+            terrainSource:   { type: 'raster-dem', url: 'https://tiles.mapterhorn.com/tilejson.json' },
+            hillshadeSource: { type: 'raster-dem', url: 'https://tiles.mapterhorn.com/tilejson.json' }
+        },
+        layers: [
+            { id: 'osm',  type: 'raster',     source: 'osm' },
+            {
+                id: 'hills', type: 'hillshade', source: 'hillshadeSource',
+                layout: { visibility: 'visible' },
+                paint:  { 'hillshade-shadow-color': '#473B24' }
+            }
+        ],
+        terrain: { source: 'terrainSource', exaggeration },
+        sky: {}
+    };
+}
+
 async function buildSatelliteTerrainStyle(exaggeration = 1) {
     const style = await fetchBaseStyle();
 
@@ -434,5 +471,5 @@ router.get('/satellite-terrain/style', async (req, res) => {
     catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-export { buildTerrainStyle, buildSatelliteTerrainStyle, renderMap, clamp };
+export { buildTerrainStyle, buildSatelliteTerrainStyle, build3dTerrainStyle, renderMap, clamp };
 export default router;

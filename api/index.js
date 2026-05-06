@@ -1,7 +1,7 @@
 import express from 'express';
 import sharp from 'sharp';
 import { initializeFonts, Bloom } from 'musicard';
-import mapRouter, { buildTerrainStyle, buildSatelliteTerrainStyle, renderMap, clamp, compositeMarkers } from './map.js';
+import mapRouter, { buildTerrainStyle, buildSatelliteTerrainStyle, build3dTerrainStyle, renderMap, clamp, compositeMarkers } from './map.js';
 import { uploadToS3 } from './s3.js';
 
 const app = express();
@@ -193,6 +193,10 @@ async function handleTerrainMarkerPost(req, res, styleFn) {
 
 app.post('/user/:user_id/post/:post_id/terrain-marker',           (req, res) => handleTerrainMarkerPost(req, res, buildTerrainStyle));
 app.post('/user/:user_id/post/:post_id/satellite-terrain-marker', (req, res) => handleTerrainMarkerPost(req, res, buildSatelliteTerrainStyle));
+app.post('/user/:user_id/post/:post_id/3d-terrain-marker',        (req, res) => {
+    const isEox = req.body?.is_eox === true;
+    handleTerrainMarkerPost(req, res, (exagg) => build3dTerrainStyle(exagg, isEox));
+});
 
 // Map routes
 app.use(mapRouter);
@@ -207,6 +211,7 @@ app.use((_req, res) => {
             'POST /user/:user_id/post/:post_id/satellite-terrain',
             'POST /user/:user_id/post/:post_id/terrain-marker',
             'POST /user/:user_id/post/:post_id/satellite-terrain-marker',
+            'POST /user/:user_id/post/:post_id/3d-terrain-marker',
             'GET  /health',
             'GET  /render?lat=&lon=&zoom=&width=&height=&bearing=&pitch=&format=&quality=',
             'POST /render  (JSON body with same params + optional style)',
