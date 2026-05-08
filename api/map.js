@@ -294,17 +294,37 @@ export async function compositeMarkers(mapPng, markers, { lat: centerLat, lon: c
         if (x < 0 || x >= width || y < 0 || y >= height) continue;
 
         let imageBuf;
-        if (isS3Url(marker.image)) {
-            imageBuf = await getFromS3(marker.image);
-        } else if (marker.image.startsWith('http')) {
-            const resp = await fetch(marker.image);
-            imageBuf = Buffer.from(await resp.arrayBuffer());
-        } else {
-            const b64 = marker.image.includes(',') ? marker.image.split(',')[1] : marker.image;
-            imageBuf = Buffer.from(b64, 'base64');
+        try {
+            if (isS3Url(marker.image)) {
+                imageBuf = await getFromS3(marker.image);
+            } else if (marker.image.startsWith('http')) {
+                const resp = await fetch(marker.image);
+                if (!resp.ok) {
+                    console.warn(`[marker] HTTP ${resp.status} for ${marker.image} — skipping`);
+                    continue;
+                }
+                const ct = resp.headers.get('content-type') || '';
+                if (!ct.startsWith('image/')) {
+                    console.warn(`[marker] Non-image content-type "${ct}" for ${marker.image} — skipping`);
+                    continue;
+                }
+                imageBuf = Buffer.from(await resp.arrayBuffer());
+            } else {
+                const b64 = marker.image.includes(',') ? marker.image.split(',')[1] : marker.image;
+                imageBuf = Buffer.from(b64, 'base64');
+            }
+        } catch (err) {
+            console.warn(`[marker] Failed to fetch image: ${err.message} — skipping`);
+            continue;
         }
 
-const { buf: markerBuf, width: mw, height: mh } = await buildMarker(imageBuf, marker.size ?? 80);
+        let markerBuf, mw, mh;
+        try {
+            ({ buf: markerBuf, width: mw, height: mh } = await buildMarker(imageBuf, marker.size ?? 80));
+        } catch (err) {
+            console.warn(`[marker] Failed to build marker (unsupported format?): ${err.message} — skipping`);
+            continue;
+        }
 
         composites.push({
             input: markerBuf,
