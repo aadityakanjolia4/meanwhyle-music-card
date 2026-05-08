@@ -61410,14 +61410,14 @@ var Bloom = async ({ albumArt, fallbackArt, artistName = "Unknown Artist", track
       imagePath: albumArt,
       width: 1415,
       height: 477,
-      borderRadius: 110
+      borderRadius: 0
     }));
   } catch (e5) {
     bgImage = await loadImage(await (0, import_cropify.cropImage)({
       imagePath: fallbackArt,
       width: 1415,
       height: 477,
-      borderRadius: 110
+      borderRadius: 0
     }));
   }
   context.drawImage(bgImage, -100, -100, 1615, 677);
@@ -61429,14 +61429,14 @@ var Bloom = async ({ albumArt, fallbackArt, artistName = "Unknown Artist", track
       imagePath: albumArt,
       width: 397,
       height: 397,
-      borderRadius: 110
+      borderRadius: 0
     }));
   } catch (e5) {
     artImage = await loadImage(await (0, import_cropify.cropImage)({
       imagePath: fallbackArt,
       width: 397,
       height: 397,
-      borderRadius: 110
+      borderRadius: 0
     }));
   }
   context.drawImage(artImage, 40, 40, 397, 397);
@@ -61479,7 +61479,7 @@ var Bloom = async ({ albumArt, fallbackArt, artistName = "Unknown Artist", track
     imagePath: canvas.toBuffer("image/png"),
     width: 1415,
     height: 477,
-    borderRadius: 140
+    borderRadius: 0
   });
   return croppedImage;
 };
@@ -61519,8 +61519,9 @@ var s3 = new import_client_s3.S3Client({
 });
 var BUCKET = "meanwhyl";
 var FOLDER = "uploads";
+var S3_URL_RE = /https?:\/\/([^.]+)\.s3(?:\.[a-z0-9-]+)?\.amazonaws\.com\/(.+)/;
 function isS3Url(url) {
-  return url.startsWith("s3://") || /https?:\/\/[^.]+\.s3[^.]*\.amazonaws\.com\//.test(url);
+  return url.startsWith("s3://") || S3_URL_RE.test(url);
 }
 async function getFromS3(url) {
   let bucket, key;
@@ -61530,7 +61531,7 @@ async function getFromS3(url) {
     bucket = path2.slice(0, slash);
     key = path2.slice(slash + 1);
   } else {
-    const match = url.match(/https?:\/\/([^.]+)\.s3[^.]*\.amazonaws\.com\/(.+)/);
+    const match = url.match(S3_URL_RE);
     if (!match) throw new Error(`Cannot parse S3 URL: ${url}`);
     [, bucket, key] = match;
     key = decodeURIComponent(key);
@@ -61666,6 +61667,41 @@ async function buildTerrainStyle(exaggeration = 1) {
   });
   return style;
 }
+async function build3dTerrainStyle(exaggeration = 1, isEox = false) {
+  const baseSource = isEox ? {
+    type: "raster",
+    tiles: ["https://tiles.maps.eox.at/wmts/1.0.0/s2cloudless-2020_3857/default/GoogleMapsCompatible/{z}/{y}/{x}.jpg"],
+    tileSize: 256,
+    attribution: "&copy; EOX IT Services GmbH (Contains modified Copernicus Sentinel data 2020)",
+    maxzoom: 15
+  } : {
+    type: "raster",
+    tiles: ["https://a.tile.openstreetmap.org/{z}/{x}/{y}.png"],
+    tileSize: 256,
+    attribution: "&copy; OpenStreetMap Contributors",
+    maxzoom: 19
+  };
+  return {
+    version: 8,
+    sources: {
+      osm: baseSource,
+      terrainSource: { type: "raster-dem", url: "https://tiles.mapterhorn.com/tilejson.json" },
+      hillshadeSource: { type: "raster-dem", url: "https://tiles.mapterhorn.com/tilejson.json" }
+    },
+    layers: [
+      { id: "osm", type: "raster", source: "osm" },
+      {
+        id: "hills",
+        type: "hillshade",
+        source: "hillshadeSource",
+        layout: { visibility: "visible" },
+        paint: { "hillshade-shadow-color": "#473B24" }
+      }
+    ],
+    terrain: { source: "terrainSource", exaggeration },
+    sky: {}
+  };
+}
 async function buildSatelliteTerrainStyle(exaggeration = 1) {
   const style = await fetchBaseStyle();
   style.sources.satelliteSource = {
@@ -61758,16 +61794,36 @@ async function compositeMarkers(mapPng, markers, { lat: centerLat, lon: centerLo
     );
     if (x < 0 || x >= width || y < 0 || y >= height) continue;
     let imageBuf;
-    if (isS3Url(marker.image)) {
-      imageBuf = await getFromS3(marker.image);
-    } else if (marker.image.startsWith("http")) {
-      const resp = await fetch(marker.image);
-      imageBuf = Buffer.from(await resp.arrayBuffer());
-    } else {
-      const b64 = marker.image.includes(",") ? marker.image.split(",")[1] : marker.image;
-      imageBuf = Buffer.from(b64, "base64");
+    try {
+      if (isS3Url(marker.image)) {
+        imageBuf = await getFromS3(marker.image);
+      } else if (marker.image.startsWith("http")) {
+        const resp = await fetch(marker.image);
+        if (!resp.ok) {
+          console.warn(`[marker] HTTP ${resp.status} for ${marker.image} \u2014 skipping`);
+          continue;
+        }
+        const ct = resp.headers.get("content-type") || "";
+        if (!ct.startsWith("image/")) {
+          console.warn(`[marker] Non-image content-type "${ct}" for ${marker.image} \u2014 skipping`);
+          continue;
+        }
+        imageBuf = Buffer.from(await resp.arrayBuffer());
+      } else {
+        const b64 = marker.image.includes(",") ? marker.image.split(",")[1] : marker.image;
+        imageBuf = Buffer.from(b64, "base64");
+      }
+    } catch (err) {
+      console.warn(`[marker] Failed to fetch image: ${err.message} \u2014 skipping`);
+      continue;
     }
-    const { buf: markerBuf, width: mw, height: mh } = await buildMarker(imageBuf, marker.size ?? 80);
+    let markerBuf, mw, mh;
+    try {
+      ({ buf: markerBuf, width: mw, height: mh } = await buildMarker(imageBuf, marker.size ?? 80));
+    } catch (err) {
+      console.warn(`[marker] Failed to build marker (unsupported format?): ${err.message} \u2014 skipping`);
+      continue;
+    }
     composites.push({
       input: markerBuf,
       left: Math.max(0, x - Math.floor(mw / 2)),
@@ -62095,6 +62151,10 @@ async function handleTerrainMarkerPost(req, res, styleFn) {
 }
 app.post("/user/:user_id/post/:post_id/terrain-marker", (req, res) => handleTerrainMarkerPost(req, res, buildTerrainStyle));
 app.post("/user/:user_id/post/:post_id/satellite-terrain-marker", (req, res) => handleTerrainMarkerPost(req, res, buildSatelliteTerrainStyle));
+app.post("/user/:user_id/post/:post_id/3d-terrain-marker", (req, res) => {
+  const isEox = req.body?.is_eox === true;
+  handleTerrainMarkerPost(req, res, (exagg) => build3dTerrainStyle(exagg, isEox));
+});
 app.use(map_default);
 app.use((_req, res) => {
   res.status(404).json({
@@ -62105,6 +62165,7 @@ app.use((_req, res) => {
       "POST /user/:user_id/post/:post_id/satellite-terrain",
       "POST /user/:user_id/post/:post_id/terrain-marker",
       "POST /user/:user_id/post/:post_id/satellite-terrain-marker",
+      "POST /user/:user_id/post/:post_id/3d-terrain-marker",
       "GET  /health",
       "GET  /render?lat=&lon=&zoom=&width=&height=&bearing=&pitch=&format=&quality=",
       "POST /render  (JSON body with same params + optional style)",
