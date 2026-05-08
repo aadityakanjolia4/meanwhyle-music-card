@@ -12,22 +12,22 @@ const s3 = new S3Client({
 const BUCKET = 'meanwhyl';
 const FOLDER = 'uploads';
 
+const S3_URL_RE = /https?:\/\/([^.]+)\.s3(?:\.[a-z0-9-]+)?\.amazonaws\.com\/(.+)/;
+
 export function isS3Url(url) {
-    return url.startsWith('s3://') || /https?:\/\/[^.]+\.s3[^.]*\.amazonaws\.com\//.test(url);
+    return url.startsWith('s3://') || S3_URL_RE.test(url);
 }
 
 export async function getFromS3(url) {
     let bucket, key;
 
     if (url.startsWith('s3://')) {
-        // s3://bucket/key
-        const path = url.slice(5);
+        const path  = url.slice(5);
         const slash = path.indexOf('/');
         bucket = path.slice(0, slash);
         key    = path.slice(slash + 1);
     } else {
-        // https://bucket.s3.amazonaws.com/key
-        const match = url.match(/https?:\/\/([^.]+)\.s3[^.]*\.amazonaws\.com\/(.+)/);
+        const match = url.match(S3_URL_RE);
         if (!match) throw new Error(`Cannot parse S3 URL: ${url}`);
         [, bucket, key] = match;
         key = decodeURIComponent(key);
