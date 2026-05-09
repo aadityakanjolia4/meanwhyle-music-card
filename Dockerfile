@@ -55,7 +55,9 @@ WORKDIR /app
 # Install dependencies as root (native addon build may need it),
 # then hand ownership to appuser using numeric IDs (name may differ per image).
 COPY package.json package-lock.json ./
-RUN npm ci --omit=dev \
+COPY patches/ ./patches/
+RUN npm ci \
+  && npm prune --omit=dev \
   && chown -R "${USER_UID}:${USER_GID}" /app
 
 COPY --chown="${USER_UID}:${USER_GID}" . .
