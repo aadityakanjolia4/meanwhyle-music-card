@@ -47,6 +47,219 @@ index a51d7c9..cb7b4d9 100644
      });
      return croppedImage;
  };
+diff --git a/node_modules/musicard/dist/Theme/BloomPortrait.d.ts b/node_modules/musicard/dist/Theme/BloomPortrait.d.ts
+new file mode 100644
+index 0000000..dd71da4
+--- /dev/null
++++ b/node_modules/musicard/dist/Theme/BloomPortrait.d.ts
+@@ -0,0 +1,39 @@
++export type BloomPortraitOptions = {
++    albumArt: string | Buffer;
++    fallbackArt?: string;
++    artistName?: string;
++    trackName?: string;
++    timeAdjust?: {
++        timeStart: string;
++        timeEnd: string;
++    };
++    progressBar?: number;
++    styleConfig?: {
++        artistStyle?: {
++            textColor?: string;
++            textItalic?: boolean;
++            textGlow?: boolean;
++        };
++        trackStyle?: {
++            textColor?: string;
++            textItalic?: boolean;
++            textGlow?: boolean;
++        };
++        timeStyle?: {
++            textColor?: string;
++            textItalic?: boolean;
++        };
++        progressBarStyle?: {
++            barColor: string;
++            barColorDuo?: boolean;
++        };
++        explicitStyle?: {
++            iconColor?: string;
++            iconOpacity?: number;
++        };
++    };
++    isExplicit?: boolean;
++    backgroundColor?: string;
++};
++export declare const BloomPortrait: (options: BloomPortraitOptions) => Promise<Buffer>;
++export default BloomPortrait;
+diff --git a/node_modules/musicard/dist/Theme/BloomPortrait.js b/node_modules/musicard/dist/Theme/BloomPortrait.js
+new file mode 100644
+index 0000000..5606ecb
+--- /dev/null
++++ b/node_modules/musicard/dist/Theme/BloomPortrait.js
+@@ -0,0 +1,162 @@
++import generateSvg from '../Functions/GenerateSvg.js';
++import { cropImage } from 'cropify';
++import { createCanvas, loadImage } from '@napi-rs/canvas';
++import { GlobalFonts } from '../fonts.js';
++
++// Canvas: 900 × 1200  (3 : 4)
++// Top 900 px  → square album art with padding on sides and top
++// Bottom 300 px → info section with blurred art shade + text
++const W       = 900;
++const H       = 1200;
++const INFO_Y  = 900;
++const PAD     = 40;
++const ART_PAD = 40;
++const ART_SZ  = W - 2 * ART_PAD;   // 820 — square art
++const ART_TOP = ART_PAD;            // 40px from top
++const BAR_W   = W - PAD * 2;        // 820
++const BAR_Y   = 1088;
++const BAR_H   = 14;
++const TIME_CY = 1148;
++
++const BloomPortraitBS = ({
++    isExplicit       = false,
++    progressBar      = 0,
++    progressBarStyle = { barColor: '#fff', barColorDuo: false },
++    backgroundColor  = 'black',
++    explicitColor    = 'white',
++    explicitOpacity  = 0.48,
++} = {}) => {
++    const safeProgress  = Number.isFinite(progressBar) ? progressBar : 0;
++    const progressWidth = (Math.min(Math.max(safeProgress, 0), 100) / 100) * BAR_W;
++    const trackColor    = progressBarStyle.barColorDuo ? progressBarStyle.barColor : 'white';
++
++    const explicitBadge = isExplicit
++        ? `<path fill-rule="evenodd" clip-rule="evenodd" d="M56.333 1020C47.313 1020 40 1027.313 40 1036.333V1052.667C40 1061.687 47.313 1069 56.333 1069H72.667C81.687 1069 89 1061.687 89 1052.667V1036.333C89 1027.313 81.687 1020 72.667 1020H56.333ZM63.31 1042.722V1038.47H71.066V1034.368H58.19V1055.389H71.066V1051.287H63.31V1046.675H70.168V1042.722H63.31Z" fill="${explicitColor}" fill-opacity="${explicitOpacity}"/>`
++        : '';
++
++    return `<svg width="${W}" height="${H}" viewBox="0 0 ${W} ${H}" fill="none" xmlns="http://www.w3.org/2000/svg">
++<rect x="0" y="${INFO_Y}" width="${W}" height="${H - INFO_Y}" fill="${backgroundColor}" fill-opacity="0.45"/>
++<rect width="${W}" height="${H}" fill="url(#bloomPortraitFade)"/>
++<rect x="${PAD}" y="${BAR_Y}" width="${BAR_W}" height="${BAR_H}" rx="${BAR_H / 2}" fill="${trackColor}" fill-opacity="0.18"/>
++<rect x="${PAD}" y="${BAR_Y}" width="${progressWidth}" height="${BAR_H}" rx="${BAR_H / 2}" fill="${progressBarStyle.barColor}"/>
++${explicitBadge}
++<defs>
++  <linearGradient id="bloomPortraitFade" x1="0" y1="${ART_TOP + ART_SZ - 60}" x2="0" y2="${INFO_Y}" gradientUnits="userSpaceOnUse">
++    <stop stop-color="${backgroundColor}" stop-opacity="0"/>
++    <stop offset="1" stop-color="${backgroundColor}" stop-opacity="0.45"/>
++  </linearGradient>
++</defs>
++</svg>`;
++};
++
++export const BloomPortrait = async ({
++    albumArt,
++    fallbackArt,
++    artistName   = 'Unknown Artist',
++    trackName    = 'Unknown Track',
++    timeAdjust:  { timeStart, timeEnd } = { timeStart: '0:00', timeEnd: '0:00' },
++    progressBar  = 0,
++    styleConfig: {
++        artistStyle      = { textColor: 'white', textItalic: false, textGlow: false },
++        trackStyle       = { textColor: 'white', textItalic: false, textGlow: false },
++        timeStyle        = { textColor: 'white', textItalic: false },
++        progressBarStyle = { barColor: 'white', barColorDuo: false },
++        explicitStyle    = { iconColor: 'white', iconOpacity: 48 },
++    } = {},
++    isExplicit      = false,
++    backgroundColor = 'black',
++}) => {
++    if (artistName.length > 28) artistName = artistName.substring(0, 25) + '...';
++    if (trackName.length  > 28) trackName  = trackName.substring(0, 25)  + '...';
++
++    const structure = generateSvg(BloomPortraitBS({
++        isExplicit,
++        progressBar,
++        progressBarStyle,
++        backgroundColor,
++        explicitColor:   explicitStyle.iconColor,
++        explicitOpacity: (explicitStyle.iconOpacity || 48) / 100,
++    }));
++
++    const canvas  = createCanvas(W, H);
++    const context = canvas.getContext('2d');
++
++    // ── Solid base ────────────────────────────────────────────────────────────
++    context.fillStyle = backgroundColor;
++    context.fillRect(0, 0, W, H);
++
++    // ── Load art ──────────────────────────────────────────────────────────────
++    let artImage;
++    try {
++        artImage = await loadImage(await cropImage({ imagePath: albumArt,    width: ART_SZ, height: ART_SZ, borderRadius: 0 }));
++    } catch {
++        if (fallbackArt) {
++            try {
++                artImage = await loadImage(await cropImage({ imagePath: fallbackArt, width: ART_SZ, height: ART_SZ, borderRadius: 0 }));
++            } catch { /* no art available */ }
++        }
++    }
++
++    // ── Blurred art — drawn behind everything, centred over the info section ──
++    // Drawn BEFORE the sharp art so the sharp art sits cleanly on top.
++    // No clip needed: the sharp art covers the blurred layer in the art area.
++    if (artImage) {
++        context.filter = 'blur(60px) opacity(0.8)';
++        // Scale to full canvas width, centre vertically at INFO_Y so the colour
++        // pool sits naturally in the info section and bleeds softly upward.
++        context.drawImage(artImage, 0, INFO_Y - W / 2, W, W);
++        context.filter = 'none';
++    }
++
++    // ── Sharp album art on top — padded 40px from top and sides ──────────────
++    if (artImage) context.drawImage(artImage, ART_PAD, ART_TOP, ART_SZ, ART_SZ);
++
++    // ── SVG overlay: gradient fade + info section dimmer + progress bar ───────
++    context.drawImage(await loadImage(structure), 0, 0);
++
++    // ── Track name ────────────────────────────────────────────────────────────
++    context.font      = `${trackStyle.textItalic ? 'italic' : 'normal'} 800 52px ${GlobalFonts}`;
++    context.fillStyle = trackStyle.textColor || 'white';
++    if (trackStyle.textGlow) {
++        context.shadowColor   = trackStyle.textColor || 'white';
++        context.shadowBlur    = 40;
++        context.shadowOffsetX = 0;
++        context.shadowOffsetY = 0;
++    }
++    context.fillText(trackName, PAD, 974);
++
++    // ── Artist name ───────────────────────────────────────────────────────────
++    context.shadowColor   = 'transparent';
++    context.shadowBlur    = 0;
++    context.font          = `${artistStyle.textItalic ? 'italic' : 'normal'} 36px ${GlobalFonts}`;
++    context.fillStyle     = artistStyle.textColor || 'white';
++    if (artistStyle.textGlow) {
++        context.shadowColor   = artistStyle.textColor || 'white';
++        context.shadowBlur    = 30;
++        context.shadowOffsetX = 0;
++        context.shadowOffsetY = 0;
++    }
++    context.fillText(artistName, isExplicit ? PAD + 59 : PAD, 1040);
++
++    // ── Timestamps ────────────────────────────────────────────────────────────
++    context.shadowColor   = 'transparent';
++    context.shadowBlur    = 0;
++    context.font          = `${timeStyle.textItalic ? 'italic' : 'normal'} 26px ${GlobalFonts}`;
++    context.fillStyle     = timeStyle.textColor || 'white';
++    context.textAlign     = 'left';
++    context.textBaseline  = 'middle';
++    context.fillText(timeStart, PAD,     TIME_CY);
++    context.textAlign     = 'right';
++    context.fillText(timeEnd,   W - PAD, TIME_CY);
++    context.textAlign     = 'start';
++    context.textBaseline  = 'alphabetic';
++
++    return cropImage({
++        imagePath:    canvas.toBuffer('image/png'),
++        width:        W,
++        height:       H,
++        borderRadius: 0,
++    });
++};
++
++export default BloomPortrait;
 diff --git a/node_modules/musicard/dist/Theme/Calm.js b/node_modules/musicard/dist/Theme/Calm.js
 index 45d4d1f..23f6c0a 100644
 --- a/node_modules/musicard/dist/Theme/Calm.js
@@ -78,6 +291,158 @@ index 45d4d1f..23f6c0a 100644
      });
      return croppedImage;
  };
+diff --git a/node_modules/musicard/dist/Theme/CalmPortrait.d.ts b/node_modules/musicard/dist/Theme/CalmPortrait.d.ts
+new file mode 100644
+index 0000000..c3478f8
+--- /dev/null
++++ b/node_modules/musicard/dist/Theme/CalmPortrait.d.ts
+@@ -0,0 +1,17 @@
++export type CalmPortraitOptions = {
++    albumArt: string | Buffer;
++    fallbackArt?: string;
++    artistName?: string;
++    trackName?: string;
++    timeAdjust?: { timeStart: string; timeEnd: string; };
++    progressBar?: number;
++    styleConfig?: {
++        artistStyle?:      { textColor?: string; textItalic?: boolean; textGlow?: boolean; };
++        trackStyle?:       { textColor?: string; textItalic?: boolean; textGlow?: boolean; };
++        timeStyle?:        { textColor?: string; textItalic?: boolean; };
++        progressBarStyle?: { barColor?: string; barColorDuo?: boolean; };
++    };
++    backgroundColor?: string;
++};
++export declare const CalmPortrait: (options: CalmPortraitOptions) => Promise<Buffer>;
++export default CalmPortrait;
+diff --git a/node_modules/musicard/dist/Theme/CalmPortrait.js b/node_modules/musicard/dist/Theme/CalmPortrait.js
+new file mode 100644
+index 0000000..c1c2a19
+--- /dev/null
++++ b/node_modules/musicard/dist/Theme/CalmPortrait.js
+@@ -0,0 +1,123 @@
++import generateSvg from '../Functions/GenerateSvg.js';
++import { cropImage } from 'cropify';
++import { createCanvas, loadImage } from '@napi-rs/canvas';
++import { GlobalFonts } from '../fonts.js';
++
++// Calm feel: full blurred background, CENTERED text, no explicit badge
++const W       = 900;
++const H       = 1200;
++const INFO_Y  = 900;
++const PAD     = 40;
++const ART_PAD = 40;
++const ART_SZ  = W - 2 * ART_PAD;
++const ART_TOP = ART_PAD;
++const BAR_W   = W - PAD * 2;
++const BAR_Y   = 1088;
++const BAR_H   = 14;
++const TIME_CY = 1148;
++
++const CalmPortraitBS = ({
++    progressBar      = 0,
++    progressBarStyle = { barColor: '#fff', barColorDuo: false },
++    backgroundColor  = 'black',
++} = {}) => {
++    const safeProgress  = Number.isFinite(progressBar) ? progressBar : 0;
++    const progressWidth = (Math.min(Math.max(safeProgress, 0), 100) / 100) * BAR_W;
++    const trackColor    = progressBarStyle.barColorDuo ? progressBarStyle.barColor : 'white';
++
++    return `<svg width="${W}" height="${H}" viewBox="0 0 ${W} ${H}" fill="none" xmlns="http://www.w3.org/2000/svg">
++<rect x="0" y="${INFO_Y}" width="${W}" height="${H - INFO_Y}" fill="${backgroundColor}" fill-opacity="0.45"/>
++<rect width="${W}" height="${H}" fill="url(#calmPortraitFade)"/>
++<rect x="${PAD}" y="${BAR_Y}" width="${BAR_W}" height="${BAR_H}" rx="${BAR_H / 2}" fill="${trackColor}" fill-opacity="0.18"/>
++<rect x="${PAD}" y="${BAR_Y}" width="${progressWidth}" height="${BAR_H}" rx="${BAR_H / 2}" fill="${progressBarStyle.barColor}"/>
++<defs>
++  <linearGradient id="calmPortraitFade" x1="0" y1="${ART_TOP + ART_SZ - 60}" x2="0" y2="${INFO_Y}" gradientUnits="userSpaceOnUse">
++    <stop stop-color="${backgroundColor}" stop-opacity="0"/>
++    <stop offset="1" stop-color="${backgroundColor}" stop-opacity="0.45"/>
++  </linearGradient>
++</defs>
++</svg>`;
++};
++
++export const CalmPortrait = async ({
++    albumArt,
++    fallbackArt,
++    artistName   = 'Unknown Artist',
++    trackName    = 'Unknown Track',
++    timeAdjust:  { timeStart, timeEnd } = { timeStart: '0:00', timeEnd: '0:00' },
++    progressBar  = 0,
++    styleConfig: {
++        artistStyle      = { textColor: 'white', textItalic: false, textGlow: false },
++        trackStyle       = { textColor: 'white', textItalic: false, textGlow: false },
++        timeStyle        = { textColor: 'white', textItalic: false },
++        progressBarStyle = { barColor: 'white', barColorDuo: false },
++    } = {},
++    backgroundColor = 'black',
++}) => {
++    if (artistName.length > 28) artistName = artistName.substring(0, 25) + '...';
++    if (trackName.length  > 28) trackName  = trackName.substring(0, 25)  + '...';
++
++    const structure = generateSvg(CalmPortraitBS({ progressBar, progressBarStyle, backgroundColor }));
++
++    const canvas  = createCanvas(W, H);
++    const context = canvas.getContext('2d');
++
++    context.fillStyle = backgroundColor;
++    context.fillRect(0, 0, W, H);
++
++    let artImage;
++    try {
++        artImage = await loadImage(await cropImage({ imagePath: albumArt,    width: ART_SZ, height: ART_SZ, borderRadius: 0 }));
++    } catch {
++        if (fallbackArt) {
++            try { artImage = await loadImage(await cropImage({ imagePath: fallbackArt, width: ART_SZ, height: ART_SZ, borderRadius: 0 })); } catch {}
++        }
++    }
++
++    // Calm: art centered vertically on canvas — color pools equally top and bottom
++    if (artImage) {
++        context.filter = 'blur(60px) opacity(0.70)';
++        context.drawImage(artImage, 0, Math.floor((H - W) / 2), W, W);
++        context.filter = 'none';
++    }
++
++    if (artImage) context.drawImage(artImage, ART_PAD, ART_TOP, ART_SZ, ART_SZ);
++
++    context.drawImage(await loadImage(structure), 0, 0);
++
++    // Centered text (Calm signature)
++    context.textAlign    = 'center';
++    context.textBaseline = 'alphabetic';
++
++    context.font      = `${trackStyle.textItalic ? 'italic' : 'normal'} 800 52px ${GlobalFonts}`;
++    context.fillStyle = trackStyle.textColor || 'white';
++    if (trackStyle.textGlow) {
++        context.shadowColor = trackStyle.textColor || 'white';
++        context.shadowBlur = 40; context.shadowOffsetX = 0; context.shadowOffsetY = 0;
++    }
++    context.fillText(trackName, W / 2, 974);
++
++    context.shadowColor = 'transparent'; context.shadowBlur = 0;
++    context.font        = `${artistStyle.textItalic ? 'italic' : 'normal'} 36px ${GlobalFonts}`;
++    context.fillStyle   = artistStyle.textColor || 'white';
++    if (artistStyle.textGlow) {
++        context.shadowColor = artistStyle.textColor || 'white';
++        context.shadowBlur = 30; context.shadowOffsetX = 0; context.shadowOffsetY = 0;
++    }
++    context.fillText(artistName, W / 2, 1040);
++
++    context.shadowColor  = 'transparent'; context.shadowBlur = 0;
++    context.font         = `${timeStyle.textItalic ? 'italic' : 'normal'} 26px ${GlobalFonts}`;
++    context.fillStyle    = timeStyle.textColor || 'white';
++    context.textBaseline = 'middle';
++    context.textAlign    = 'left';
++    context.fillText(timeStart, PAD, TIME_CY);
++    context.textAlign    = 'right';
++    context.fillText(timeEnd, W - PAD, TIME_CY);
++    context.textAlign    = 'start';
++    context.textBaseline = 'alphabetic';
++
++    return cropImage({ imagePath: canvas.toBuffer('image/png'), width: W, height: H, borderRadius: 0 });
++};
++
++export default CalmPortrait;
 diff --git a/node_modules/musicard/dist/Theme/Drift.js b/node_modules/musicard/dist/Theme/Drift.js
 index 70fb479..57364b3 100644
 --- a/node_modules/musicard/dist/Theme/Drift.js
@@ -127,6 +492,175 @@ index 70fb479..57364b3 100644
      });
      return croppedImage;
  };
+diff --git a/node_modules/musicard/dist/Theme/DriftPortrait.d.ts b/node_modules/musicard/dist/Theme/DriftPortrait.d.ts
+new file mode 100644
+index 0000000..160e35f
+--- /dev/null
++++ b/node_modules/musicard/dist/Theme/DriftPortrait.d.ts
+@@ -0,0 +1,19 @@
++export type DriftPortraitOptions = {
++    albumArt: string | Buffer;
++    fallbackArt?: string;
++    artistName?: string;
++    trackName?: string;
++    timeAdjust?: { timeStart: string; timeEnd: string; };
++    progressBar?: number;
++    styleConfig?: {
++        artistStyle?:      { textColor?: string; textItalic?: boolean; textGlow?: boolean; };
++        trackStyle?:       { textColor?: string; textItalic?: boolean; textGlow?: boolean; };
++        timeStyle?:        { textColor?: string; textItalic?: boolean; };
++        progressBarStyle?: { barColor?: string; barColorDuo?: boolean; };
++        explicitStyle?:    { iconColor?: string; iconOpacity?: number; };
++    };
++    isExplicit?: boolean;
++    backgroundColor?: string;
++};
++export declare const DriftPortrait: (options: DriftPortraitOptions) => Promise<Buffer>;
++export default DriftPortrait;
+diff --git a/node_modules/musicard/dist/Theme/DriftPortrait.js b/node_modules/musicard/dist/Theme/DriftPortrait.js
+new file mode 100644
+index 0000000..40fc4e2
+--- /dev/null
++++ b/node_modules/musicard/dist/Theme/DriftPortrait.js
+@@ -0,0 +1,138 @@
++import generateSvg from '../Functions/GenerateSvg.js';
++import { cropImage } from 'cropify';
++import { createCanvas, loadImage } from '@napi-rs/canvas';
++import { GlobalFonts } from '../fonts.js';
++
++const W       = 900;
++const H       = 1200;
++const INFO_Y  = 900;
++const PAD     = 40;
++const ART_PAD = 40;
++const ART_SZ  = W - 2 * ART_PAD;
++const ART_TOP = ART_PAD;
++const BAR_W   = W - PAD * 2;
++const BAR_Y   = 1088;
++const BAR_H   = 14;
++const TIME_CY = 1148;
++
++const DriftPortraitBS = ({
++    isExplicit       = false,
++    progressBar      = 0,
++    progressBarStyle = { barColor: '#fff', barColorDuo: false },
++    backgroundColor  = 'black',
++    explicitColor    = 'white',
++    explicitOpacity  = 0.48,
++} = {}) => {
++    const safeProgress  = Number.isFinite(progressBar) ? progressBar : 0;
++    const progressWidth = (Math.min(Math.max(safeProgress, 0), 100) / 100) * BAR_W;
++    const trackColor    = progressBarStyle.barColorDuo ? progressBarStyle.barColor : 'white';
++
++    const explicitBadge = isExplicit
++        ? `<path fill-rule="evenodd" clip-rule="evenodd" d="M56.333 1020C47.313 1020 40 1027.313 40 1036.333V1052.667C40 1061.687 47.313 1069 56.333 1069H72.667C81.687 1069 89 1061.687 89 1052.667V1036.333C89 1027.313 81.687 1020 72.667 1020H56.333ZM63.31 1042.722V1038.47H71.066V1034.368H58.19V1055.389H71.066V1051.287H63.31V1046.675H70.168V1042.722H63.31Z" fill="${explicitColor}" fill-opacity="${explicitOpacity}"/>`
++        : '';
++
++    return `<svg width="${W}" height="${H}" viewBox="0 0 ${W} ${H}" fill="none" xmlns="http://www.w3.org/2000/svg">
++<rect x="0" y="${INFO_Y}" width="${W}" height="${H - INFO_Y}" fill="${backgroundColor}" fill-opacity="0.45"/>
++<rect width="${W}" height="${H}" fill="url(#driftPortraitFade)"/>
++<rect x="${PAD}" y="${BAR_Y}" width="${BAR_W}" height="${BAR_H}" rx="${BAR_H / 2}" fill="${trackColor}" fill-opacity="0.18"/>
++<rect x="${PAD}" y="${BAR_Y}" width="${progressWidth}" height="${BAR_H}" rx="${BAR_H / 2}" fill="${progressBarStyle.barColor}"/>
++${explicitBadge}
++<defs>
++  <linearGradient id="driftPortraitFade" x1="0" y1="${ART_TOP + ART_SZ - 60}" x2="0" y2="${INFO_Y}" gradientUnits="userSpaceOnUse">
++    <stop stop-color="${backgroundColor}" stop-opacity="0"/>
++    <stop offset="1" stop-color="${backgroundColor}" stop-opacity="0.45"/>
++  </linearGradient>
++</defs>
++</svg>`;
++};
++
++export const DriftPortrait = async ({
++    albumArt,
++    fallbackArt,
++    artistName   = 'Unknown Artist',
++    trackName    = 'Unknown Track',
++    timeAdjust:  { timeStart, timeEnd } = { timeStart: '0:00', timeEnd: '0:00' },
++    progressBar  = 0,
++    styleConfig: {
++        artistStyle      = { textColor: 'white', textItalic: false, textGlow: false },
++        trackStyle       = { textColor: 'white', textItalic: false, textGlow: false },
++        timeStyle        = { textColor: 'white', textItalic: false },
++        progressBarStyle = { barColor: 'white', barColorDuo: false },
++        explicitStyle    = { iconColor: 'white', iconOpacity: 48 },
++    } = {},
++    isExplicit      = false,
++    backgroundColor = 'black',
++}) => {
++    if (artistName.length > 28) artistName = artistName.substring(0, 25) + '...';
++    if (trackName.length  > 28) trackName  = trackName.substring(0, 25)  + '...';
++
++    const structure = generateSvg(DriftPortraitBS({
++        isExplicit,
++        progressBar,
++        progressBarStyle,
++        backgroundColor,
++        explicitColor:   explicitStyle.iconColor,
++        explicitOpacity: (explicitStyle.iconOpacity || 48) / 100,
++    }));
++
++    const canvas  = createCanvas(W, H);
++    const context = canvas.getContext('2d');
++
++    context.fillStyle = backgroundColor;
++    context.fillRect(0, 0, W, H);
++
++    let artImage;
++    try {
++        artImage = await loadImage(await cropImage({ imagePath: albumArt,    width: ART_SZ, height: ART_SZ, borderRadius: 0 }));
++    } catch {
++        if (fallbackArt) {
++            try { artImage = await loadImage(await cropImage({ imagePath: fallbackArt, width: ART_SZ, height: ART_SZ, borderRadius: 0 })); } catch {}
++        }
++    }
++
++    // Drift: art anchored near top — color pool bleeds downward from above the art
++    if (artImage) {
++        context.filter = 'blur(60px) opacity(0.55)';
++        context.drawImage(artImage, -50, Math.floor(-W * 0.3), W + 100, W + 100);
++        context.filter = 'none';
++    }
++
++    if (artImage) context.drawImage(artImage, ART_PAD, ART_TOP, ART_SZ, ART_SZ);
++
++    context.drawImage(await loadImage(structure), 0, 0);
++
++    context.textAlign    = 'left';
++    context.textBaseline = 'alphabetic';
++
++    context.font      = `${trackStyle.textItalic ? 'italic' : 'normal'} 800 52px ${GlobalFonts}`;
++    context.fillStyle = trackStyle.textColor || 'white';
++    if (trackStyle.textGlow) {
++        context.shadowColor = trackStyle.textColor || 'white';
++        context.shadowBlur = 40; context.shadowOffsetX = 0; context.shadowOffsetY = 0;
++    }
++    context.fillText(trackName, PAD, 974);
++
++    context.shadowColor = 'transparent'; context.shadowBlur = 0;
++    context.font        = `${artistStyle.textItalic ? 'italic' : 'normal'} 36px ${GlobalFonts}`;
++    context.fillStyle   = artistStyle.textColor || 'white';
++    if (artistStyle.textGlow) {
++        context.shadowColor = artistStyle.textColor || 'white';
++        context.shadowBlur = 30; context.shadowOffsetX = 0; context.shadowOffsetY = 0;
++    }
++    context.fillText(artistName, isExplicit ? PAD + 59 : PAD, 1040);
++
++    context.shadowColor  = 'transparent'; context.shadowBlur = 0;
++    context.font         = `${timeStyle.textItalic ? 'italic' : 'normal'} 26px ${GlobalFonts}`;
++    context.fillStyle    = timeStyle.textColor || 'white';
++    context.textBaseline = 'middle';
++    context.textAlign    = 'left';
++    context.fillText(timeStart, PAD, TIME_CY);
++    context.textAlign    = 'right';
++    context.fillText(timeEnd, W - PAD, TIME_CY);
++    context.textAlign    = 'start';
++    context.textBaseline = 'alphabetic';
++
++    return cropImage({ imagePath: canvas.toBuffer('image/png'), width: W, height: H, borderRadius: 0 });
++};
++
++export default DriftPortrait;
 diff --git a/node_modules/musicard/dist/Theme/Ease.js b/node_modules/musicard/dist/Theme/Ease.js
 index 477ccdb..7d0528c 100644
 --- a/node_modules/musicard/dist/Theme/Ease.js
@@ -176,6 +710,191 @@ index 477ccdb..7d0528c 100644
      });
      return croppedImage;
  };
+diff --git a/node_modules/musicard/dist/Theme/EasePortrait.d.ts b/node_modules/musicard/dist/Theme/EasePortrait.d.ts
+new file mode 100644
+index 0000000..a803e79
+--- /dev/null
++++ b/node_modules/musicard/dist/Theme/EasePortrait.d.ts
+@@ -0,0 +1,21 @@
++export type EasePortraitOptions = {
++    albumArt: string | Buffer;
++    fallbackArt?: string;
++    artistName?: string;
++    trackName?: string;
++    timeAdjust?: { timeStart: string; timeEnd: string; };
++    progressBar?: number;
++    volumeBar?: number;
++    styleConfig?: {
++        artistStyle?:      { textColor?: string; textItalic?: boolean; textGlow?: boolean; };
++        trackStyle?:       { textColor?: string; textItalic?: boolean; textGlow?: boolean; };
++        timeStyle?:        { textColor?: string; textItalic?: boolean; };
++        progressBarStyle?: { barColor?: string; barColorDuo?: boolean; };
++        volumeBarStyle?:   { barColor?: string; barColorDuo?: boolean; };
++        explicitStyle?:    { iconColor?: string; iconOpacity?: number; };
++    };
++    isExplicit?: boolean;
++    backgroundColor?: string;
++};
++export declare const EasePortrait: (options: EasePortraitOptions) => Promise<Buffer>;
++export default EasePortrait;
+diff --git a/node_modules/musicard/dist/Theme/EasePortrait.js b/node_modules/musicard/dist/Theme/EasePortrait.js
+new file mode 100644
+index 0000000..9c5eefc
+--- /dev/null
++++ b/node_modules/musicard/dist/Theme/EasePortrait.js
+@@ -0,0 +1,152 @@
++import generateSvg from '../Functions/GenerateSvg.js';
++import { cropImage } from 'cropify';
++import { createCanvas, loadImage } from '@napi-rs/canvas';
++import { GlobalFonts } from '../fonts.js';
++
++const W           = 900;
++const H           = 1200;
++const INFO_Y      = 900;
++const PAD         = 40;
++const ART_PAD     = 40;
++const ART_SZ      = W - 2 * ART_PAD;
++const ART_TOP     = ART_PAD;
++const BAR_W       = W - PAD * 2;
++const BAR_Y       = 1088;
++const BAR_H       = 14;
++const TIME_CY     = 1140;
++const VOL_BAR_Y   = 1166;
++const VOL_BAR_H   = 8;
++
++const EasePortraitBS = ({
++    isExplicit       = false,
++    progressBar      = 0,
++    progressBarStyle = { barColor: '#fff', barColorDuo: false },
++    volumeBar        = 0,
++    volumeBarStyle   = { barColor: '#fff', barColorDuo: false },
++    backgroundColor  = 'black',
++    explicitColor    = 'white',
++    explicitOpacity  = 0.48,
++} = {}) => {
++    const safeProgress  = Number.isFinite(progressBar) ? progressBar : 0;
++    const progressWidth = (Math.min(Math.max(safeProgress, 0), 100) / 100) * BAR_W;
++    const trackColor    = progressBarStyle.barColorDuo ? progressBarStyle.barColor : 'white';
++
++    const safeVolume  = Number.isFinite(volumeBar) ? volumeBar : 0;
++    const volumeWidth = (Math.min(Math.max(safeVolume, 0), 100) / 100) * BAR_W;
++    const volTrack    = volumeBarStyle.barColorDuo ? volumeBarStyle.barColor : 'white';
++
++    const explicitBadge = isExplicit
++        ? `<path fill-rule="evenodd" clip-rule="evenodd" d="M56.333 1020C47.313 1020 40 1027.313 40 1036.333V1052.667C40 1061.687 47.313 1069 56.333 1069H72.667C81.687 1069 89 1061.687 89 1052.667V1036.333C89 1027.313 81.687 1020 72.667 1020H56.333ZM63.31 1042.722V1038.47H71.066V1034.368H58.19V1055.389H71.066V1051.287H63.31V1046.675H70.168V1042.722H63.31Z" fill="${explicitColor}" fill-opacity="${explicitOpacity}"/>`
++        : '';
++
++    return `<svg width="${W}" height="${H}" viewBox="0 0 ${W} ${H}" fill="none" xmlns="http://www.w3.org/2000/svg">
++<rect x="0" y="${INFO_Y}" width="${W}" height="${H - INFO_Y}" fill="${backgroundColor}" fill-opacity="0.45"/>
++<rect width="${W}" height="${H}" fill="url(#easePortraitFade)"/>
++<rect x="${PAD}" y="${BAR_Y}" width="${BAR_W}" height="${BAR_H}" rx="${BAR_H / 2}" fill="${trackColor}" fill-opacity="0.18"/>
++<rect x="${PAD}" y="${BAR_Y}" width="${progressWidth}" height="${BAR_H}" rx="${BAR_H / 2}" fill="${progressBarStyle.barColor}"/>
++<rect x="${PAD}" y="${VOL_BAR_Y}" width="${BAR_W}" height="${VOL_BAR_H}" rx="${VOL_BAR_H / 2}" fill="${volTrack}" fill-opacity="0.18"/>
++<rect x="${PAD}" y="${VOL_BAR_Y}" width="${volumeWidth}" height="${VOL_BAR_H}" rx="${VOL_BAR_H / 2}" fill="${volumeBarStyle.barColor}"/>
++${explicitBadge}
++<defs>
++  <linearGradient id="easePortraitFade" x1="0" y1="${ART_TOP + ART_SZ - 60}" x2="0" y2="${INFO_Y}" gradientUnits="userSpaceOnUse">
++    <stop stop-color="${backgroundColor}" stop-opacity="0"/>
++    <stop offset="1" stop-color="${backgroundColor}" stop-opacity="0.45"/>
++  </linearGradient>
++</defs>
++</svg>`;
++};
++
++export const EasePortrait = async ({
++    albumArt,
++    fallbackArt,
++    artistName   = 'Unknown Artist',
++    trackName    = 'Unknown Track',
++    timeAdjust:  { timeStart, timeEnd } = { timeStart: '0:00', timeEnd: '0:00' },
++    progressBar  = 0,
++    volumeBar    = 0,
++    styleConfig: {
++        artistStyle      = { textColor: 'white', textItalic: false, textGlow: false },
++        trackStyle       = { textColor: 'white', textItalic: false, textGlow: false },
++        timeStyle        = { textColor: 'white', textItalic: false },
++        progressBarStyle = { barColor: 'white', barColorDuo: false },
++        volumeBarStyle   = { barColor: 'white', barColorDuo: false },
++        explicitStyle    = { iconColor: 'white', iconOpacity: 48 },
++    } = {},
++    isExplicit      = false,
++    backgroundColor = 'black',
++}) => {
++    if (artistName.length > 28) artistName = artistName.substring(0, 25) + '...';
++    if (trackName.length  > 28) trackName  = trackName.substring(0, 25)  + '...';
++
++    const structure = generateSvg(EasePortraitBS({
++        isExplicit,
++        progressBar,
++        progressBarStyle,
++        volumeBar,
++        volumeBarStyle,
++        backgroundColor,
++        explicitColor:   explicitStyle.iconColor,
++        explicitOpacity: (explicitStyle.iconOpacity || 48) / 100,
++    }));
++
++    const canvas  = createCanvas(W, H);
++    const context = canvas.getContext('2d');
++
++    context.fillStyle = backgroundColor;
++    context.fillRect(0, 0, W, H);
++
++    let artImage;
++    try {
++        artImage = await loadImage(await cropImage({ imagePath: albumArt,    width: ART_SZ, height: ART_SZ, borderRadius: 0 }));
++    } catch {
++        if (fallbackArt) {
++            try { artImage = await loadImage(await cropImage({ imagePath: fallbackArt, width: ART_SZ, height: ART_SZ, borderRadius: 0 })); } catch {}
++        }
++    }
++
++    // Ease: art stretched to fill the full portrait canvas — colors span the whole height
++    if (artImage) {
++        context.filter = 'blur(60px) opacity(0.65)';
++        context.drawImage(artImage, 0, 0, W, H);
++        context.filter = 'none';
++    }
++
++    if (artImage) context.drawImage(artImage, ART_PAD, ART_TOP, ART_SZ, ART_SZ);
++
++    context.drawImage(await loadImage(structure), 0, 0);
++
++    context.textAlign    = 'left';
++    context.textBaseline = 'alphabetic';
++
++    context.font      = `${trackStyle.textItalic ? 'italic' : 'normal'} 800 52px ${GlobalFonts}`;
++    context.fillStyle = trackStyle.textColor || 'white';
++    if (trackStyle.textGlow) {
++        context.shadowColor = trackStyle.textColor || 'white';
++        context.shadowBlur = 40; context.shadowOffsetX = 0; context.shadowOffsetY = 0;
++    }
++    context.fillText(trackName, PAD, 974);
++
++    context.shadowColor = 'transparent'; context.shadowBlur = 0;
++    context.font        = `${artistStyle.textItalic ? 'italic' : 'normal'} 36px ${GlobalFonts}`;
++    context.fillStyle   = artistStyle.textColor || 'white';
++    if (artistStyle.textGlow) {
++        context.shadowColor = artistStyle.textColor || 'white';
++        context.shadowBlur = 30; context.shadowOffsetX = 0; context.shadowOffsetY = 0;
++    }
++    context.fillText(artistName, isExplicit ? PAD + 59 : PAD, 1040);
++
++    context.shadowColor  = 'transparent'; context.shadowBlur = 0;
++    context.font         = `${timeStyle.textItalic ? 'italic' : 'normal'} 24px ${GlobalFonts}`;
++    context.fillStyle    = timeStyle.textColor || 'white';
++    context.textBaseline = 'middle';
++    context.textAlign    = 'left';
++    context.fillText(timeStart, PAD, TIME_CY);
++    context.textAlign    = 'right';
++    context.fillText(timeEnd, W - PAD, TIME_CY);
++    context.textAlign    = 'start';
++    context.textBaseline = 'alphabetic';
++
++    return cropImage({ imagePath: canvas.toBuffer('image/png'), width: W, height: H, borderRadius: 0 });
++};
++
++export default EasePortrait;
 diff --git a/node_modules/musicard/dist/Theme/Haze.js b/node_modules/musicard/dist/Theme/Haze.js
 index cef7e36..4a4452b 100644
 --- a/node_modules/musicard/dist/Theme/Haze.js
@@ -189,6 +908,175 @@ index cef7e36..4a4452b 100644
      });
      return croppedImage;
  };
+diff --git a/node_modules/musicard/dist/Theme/HazePortrait.d.ts b/node_modules/musicard/dist/Theme/HazePortrait.d.ts
+new file mode 100644
+index 0000000..3e293ee
+--- /dev/null
++++ b/node_modules/musicard/dist/Theme/HazePortrait.d.ts
+@@ -0,0 +1,19 @@
++export type HazePortraitOptions = {
++    albumArt: string | Buffer;
++    fallbackArt?: string;
++    artistName?: string;
++    trackName?: string;
++    timeAdjust?: { timeStart: string; timeEnd: string; };
++    progressBar?: number;
++    styleConfig?: {
++        artistStyle?:      { textColor?: string; textItalic?: boolean; textGlow?: boolean; };
++        trackStyle?:       { textColor?: string; textItalic?: boolean; textGlow?: boolean; };
++        timeStyle?:        { textColor?: string; textItalic?: boolean; };
++        progressBarStyle?: { barColor?: string; barColorDuo?: boolean; };
++        explicitStyle?:    { iconColor?: string; iconOpacity?: number; };
++    };
++    isExplicit?: boolean;
++    backgroundColor?: string;
++};
++export declare const HazePortrait: (options: HazePortraitOptions) => Promise<Buffer>;
++export default HazePortrait;
+diff --git a/node_modules/musicard/dist/Theme/HazePortrait.js b/node_modules/musicard/dist/Theme/HazePortrait.js
+new file mode 100644
+index 0000000..33ed05e
+--- /dev/null
++++ b/node_modules/musicard/dist/Theme/HazePortrait.js
+@@ -0,0 +1,138 @@
++import generateSvg from '../Functions/GenerateSvg.js';
++import { cropImage } from 'cropify';
++import { createCanvas, loadImage } from '@napi-rs/canvas';
++import { GlobalFonts } from '../fonts.js';
++
++const W       = 900;
++const H       = 1200;
++const INFO_Y  = 900;
++const PAD     = 40;
++const ART_PAD = 40;
++const ART_SZ  = W - 2 * ART_PAD;
++const ART_TOP = ART_PAD;
++const BAR_W   = W - PAD * 2;
++const BAR_Y   = 1088;
++const BAR_H   = 14;
++const TIME_CY = 1148;
++
++const HazePortraitBS = ({
++    isExplicit       = false,
++    progressBar      = 0,
++    progressBarStyle = { barColor: '#fff', barColorDuo: false },
++    backgroundColor  = 'black',
++    explicitColor    = 'white',
++    explicitOpacity  = 0.48,
++} = {}) => {
++    const safeProgress  = Number.isFinite(progressBar) ? progressBar : 0;
++    const progressWidth = (Math.min(Math.max(safeProgress, 0), 100) / 100) * BAR_W;
++    const trackColor    = progressBarStyle.barColorDuo ? progressBarStyle.barColor : 'white';
++
++    const explicitBadge = isExplicit
++        ? `<path fill-rule="evenodd" clip-rule="evenodd" d="M56.333 1020C47.313 1020 40 1027.313 40 1036.333V1052.667C40 1061.687 47.313 1069 56.333 1069H72.667C81.687 1069 89 1061.687 89 1052.667V1036.333C89 1027.313 81.687 1020 72.667 1020H56.333ZM63.31 1042.722V1038.47H71.066V1034.368H58.19V1055.389H71.066V1051.287H63.31V1046.675H70.168V1042.722H63.31Z" fill="${explicitColor}" fill-opacity="${explicitOpacity}"/>`
++        : '';
++
++    return `<svg width="${W}" height="${H}" viewBox="0 0 ${W} ${H}" fill="none" xmlns="http://www.w3.org/2000/svg">
++<rect x="0" y="${INFO_Y}" width="${W}" height="${H - INFO_Y}" fill="${backgroundColor}" fill-opacity="0.45"/>
++<rect width="${W}" height="${H}" fill="url(#hazePortraitFade)"/>
++<rect x="${PAD}" y="${BAR_Y}" width="${BAR_W}" height="${BAR_H}" rx="${BAR_H / 2}" fill="${trackColor}" fill-opacity="0.18"/>
++<rect x="${PAD}" y="${BAR_Y}" width="${progressWidth}" height="${BAR_H}" rx="${BAR_H / 2}" fill="${progressBarStyle.barColor}"/>
++${explicitBadge}
++<defs>
++  <linearGradient id="hazePortraitFade" x1="0" y1="${ART_TOP + ART_SZ - 60}" x2="0" y2="${INFO_Y}" gradientUnits="userSpaceOnUse">
++    <stop stop-color="${backgroundColor}" stop-opacity="0"/>
++    <stop offset="1" stop-color="${backgroundColor}" stop-opacity="0.45"/>
++  </linearGradient>
++</defs>
++</svg>`;
++};
++
++export const HazePortrait = async ({
++    albumArt,
++    fallbackArt,
++    artistName   = 'Unknown Artist',
++    trackName    = 'Unknown Track',
++    timeAdjust:  { timeStart, timeEnd } = { timeStart: '0:00', timeEnd: '0:00' },
++    progressBar  = 0,
++    styleConfig: {
++        artistStyle      = { textColor: 'white', textItalic: false, textGlow: false },
++        trackStyle       = { textColor: 'white', textItalic: false, textGlow: false },
++        timeStyle        = { textColor: 'white', textItalic: false },
++        progressBarStyle = { barColor: 'white', barColorDuo: false },
++        explicitStyle    = { iconColor: 'white', iconOpacity: 48 },
++    } = {},
++    isExplicit      = false,
++    backgroundColor = 'black',
++}) => {
++    if (artistName.length > 28) artistName = artistName.substring(0, 25) + '...';
++    if (trackName.length  > 28) trackName  = trackName.substring(0, 25)  + '...';
++
++    const structure = generateSvg(HazePortraitBS({
++        isExplicit,
++        progressBar,
++        progressBarStyle,
++        backgroundColor,
++        explicitColor:   explicitStyle.iconColor,
++        explicitOpacity: (explicitStyle.iconOpacity || 48) / 100,
++    }));
++
++    const canvas  = createCanvas(W, H);
++    const context = canvas.getContext('2d');
++
++    context.fillStyle = backgroundColor;
++    context.fillRect(0, 0, W, H);
++
++    let artImage;
++    try {
++        artImage = await loadImage(await cropImage({ imagePath: albumArt,    width: ART_SZ, height: ART_SZ, borderRadius: 0 }));
++    } catch {
++        if (fallbackArt) {
++            try { artImage = await loadImage(await cropImage({ imagePath: fallbackArt, width: ART_SZ, height: ART_SZ, borderRadius: 0 })); } catch {}
++        }
++    }
++
++    // Haze: art offset to lower-right corner — diagonal glow from bottom-right
++    if (artImage) {
++        context.filter = 'blur(60px) opacity(0.75)';
++        context.drawImage(artImage, Math.floor(W * 0.25), Math.floor(H * 0.3), W, W);
++        context.filter = 'none';
++    }
++
++    if (artImage) context.drawImage(artImage, ART_PAD, ART_TOP, ART_SZ, ART_SZ);
++
++    context.drawImage(await loadImage(structure), 0, 0);
++
++    context.textAlign    = 'left';
++    context.textBaseline = 'alphabetic';
++
++    context.font      = `${trackStyle.textItalic ? 'italic' : 'normal'} 800 52px ${GlobalFonts}`;
++    context.fillStyle = trackStyle.textColor || 'white';
++    if (trackStyle.textGlow) {
++        context.shadowColor = trackStyle.textColor || 'white';
++        context.shadowBlur = 40; context.shadowOffsetX = 0; context.shadowOffsetY = 0;
++    }
++    context.fillText(trackName, PAD, 974);
++
++    context.shadowColor = 'transparent'; context.shadowBlur = 0;
++    context.font        = `${artistStyle.textItalic ? 'italic' : 'normal'} 36px ${GlobalFonts}`;
++    context.fillStyle   = artistStyle.textColor || 'white';
++    if (artistStyle.textGlow) {
++        context.shadowColor = artistStyle.textColor || 'white';
++        context.shadowBlur = 30; context.shadowOffsetX = 0; context.shadowOffsetY = 0;
++    }
++    context.fillText(artistName, isExplicit ? PAD + 59 : PAD, 1040);
++
++    context.shadowColor  = 'transparent'; context.shadowBlur = 0;
++    context.font         = `${timeStyle.textItalic ? 'italic' : 'normal'} 26px ${GlobalFonts}`;
++    context.fillStyle    = timeStyle.textColor || 'white';
++    context.textBaseline = 'middle';
++    context.textAlign    = 'left';
++    context.fillText(timeStart, PAD, TIME_CY);
++    context.textAlign    = 'right';
++    context.fillText(timeEnd, W - PAD, TIME_CY);
++    context.textAlign    = 'start';
++    context.textBaseline = 'alphabetic';
++
++    return cropImage({ imagePath: canvas.toBuffer('image/png'), width: W, height: H, borderRadius: 0 });
++};
++
++export default HazePortrait;
 diff --git a/node_modules/musicard/dist/Theme/Melt.js b/node_modules/musicard/dist/Theme/Melt.js
 index ad893a4..0d6b698 100644
 --- a/node_modules/musicard/dist/Theme/Melt.js
@@ -220,3 +1108,201 @@ index ad893a4..0d6b698 100644
      });
      return croppedImage;
  };
+diff --git a/node_modules/musicard/dist/Theme/MeltPortrait.d.ts b/node_modules/musicard/dist/Theme/MeltPortrait.d.ts
+new file mode 100644
+index 0000000..749bd4c
+--- /dev/null
++++ b/node_modules/musicard/dist/Theme/MeltPortrait.d.ts
+@@ -0,0 +1,21 @@
++export type MeltPortraitOptions = {
++    albumArt: string | Buffer;
++    fallbackArt?: string;
++    artistName?: string;
++    trackName?: string;
++    timeAdjust?: { timeStart: string; timeEnd: string; };
++    progressBar?: number;
++    volumeBar?: number;
++    styleConfig?: {
++        artistStyle?:      { textColor?: string; textItalic?: boolean; textGlow?: boolean; };
++        trackStyle?:       { textColor?: string; textItalic?: boolean; textGlow?: boolean; };
++        timeStyle?:        { textColor?: string; textItalic?: boolean; };
++        progressBarStyle?: { barColor?: string; barColorDuo?: boolean; };
++        volumeBarStyle?:   { barColor?: string; barColorDuo?: boolean; };
++        explicitStyle?:    { iconColor?: string; iconOpacity?: number; };
++    };
++    isExplicit?: boolean;
++    backgroundColor?: string;
++};
++export declare const MeltPortrait: (options: MeltPortraitOptions) => Promise<Buffer>;
++export default MeltPortrait;
+diff --git a/node_modules/musicard/dist/Theme/MeltPortrait.js b/node_modules/musicard/dist/Theme/MeltPortrait.js
+new file mode 100644
+index 0000000..a6003d5
+--- /dev/null
++++ b/node_modules/musicard/dist/Theme/MeltPortrait.js
+@@ -0,0 +1,137 @@
++import generateSvg from '../Functions/GenerateSvg.js';
++import { cropImage } from 'cropify';
++import { createCanvas, loadImage } from '@napi-rs/canvas';
++import { GlobalFonts } from '../fonts.js';
++
++const W           = 900;
++const H           = 1200;
++const INFO_Y      = 900;
++const PAD         = 40;
++const ART_PAD     = 40;
++const ART_SZ      = W - 2 * ART_PAD;
++const ART_TOP     = ART_PAD;
++const BAR_W       = W - PAD * 2;
++const BAR_Y       = 1088;
++const BAR_H       = 14;
++const TIME_CY     = 1140;
++const VOL_BAR_Y   = 1166;
++const VOL_BAR_H   = 8;
++
++const MeltPortraitBS = ({
++    isExplicit       = false,
++    progressBar      = 0,
++    progressBarStyle = { barColor: '#fff', barColorDuo: false },
++    volumeBar        = 0,
++    volumeBarStyle   = { barColor: '#fff', barColorDuo: false },
++    backgroundColor  = 'black',
++    explicitColor    = 'white',
++    explicitOpacity  = 0.48,
++} = {}) => {
++    const safeProgress  = Number.isFinite(progressBar) ? progressBar : 0;
++    const progressWidth = (Math.min(Math.max(safeProgress, 0), 100) / 100) * BAR_W;
++    const trackColor    = progressBarStyle.barColorDuo ? progressBarStyle.barColor : 'white';
++
++    const safeVolume  = Number.isFinite(volumeBar) ? volumeBar : 0;
++    const volumeWidth = (Math.min(Math.max(safeVolume, 0), 100) / 100) * BAR_W;
++    const volTrack    = volumeBarStyle.barColorDuo ? volumeBarStyle.barColor : 'white';
++
++    const explicitBadge = isExplicit
++        ? `<path fill-rule="evenodd" clip-rule="evenodd" d="M56.333 1020C47.313 1020 40 1027.313 40 1036.333V1052.667C40 1061.687 47.313 1069 56.333 1069H72.667C81.687 1069 89 1061.687 89 1052.667V1036.333C89 1027.313 81.687 1020 72.667 1020H56.333ZM63.31 1042.722V1038.47H71.066V1034.368H58.19V1055.389H71.066V1051.287H63.31V1046.675H70.168V1042.722H63.31Z" fill="${explicitColor}" fill-opacity="${explicitOpacity}"/>`
++        : '';
++
++    return `<svg width="${W}" height="${H}" viewBox="0 0 ${W} ${H}" fill="none" xmlns="http://www.w3.org/2000/svg">
++<rect width="${W}" height="${H}" fill="${backgroundColor}"/>
++<rect x="0" y="${INFO_Y}" width="${W}" height="${H - INFO_Y}" fill="${backgroundColor}" fill-opacity="0.6"/>
++<rect x="${PAD}" y="${BAR_Y}" width="${BAR_W}" height="${BAR_H}" rx="${BAR_H / 2}" fill="${trackColor}" fill-opacity="0.18"/>
++<rect x="${PAD}" y="${BAR_Y}" width="${progressWidth}" height="${BAR_H}" rx="${BAR_H / 2}" fill="${progressBarStyle.barColor}"/>
++<rect x="${PAD}" y="${VOL_BAR_Y}" width="${BAR_W}" height="${VOL_BAR_H}" rx="${VOL_BAR_H / 2}" fill="${volTrack}" fill-opacity="0.18"/>
++<rect x="${PAD}" y="${VOL_BAR_Y}" width="${volumeWidth}" height="${VOL_BAR_H}" rx="${VOL_BAR_H / 2}" fill="${volumeBarStyle.barColor}"/>
++${explicitBadge}
++</svg>`;
++};
++
++export const MeltPortrait = async ({
++    albumArt,
++    fallbackArt,
++    artistName   = 'Unknown Artist',
++    trackName    = 'Unknown Track',
++    timeAdjust:  { timeStart, timeEnd } = { timeStart: '0:00', timeEnd: '0:00' },
++    progressBar  = 0,
++    volumeBar    = 0,
++    styleConfig: {
++        artistStyle      = { textColor: 'white', textItalic: false, textGlow: false },
++        trackStyle       = { textColor: 'white', textItalic: false, textGlow: false },
++        timeStyle        = { textColor: 'white', textItalic: false },
++        progressBarStyle = { barColor: 'white', barColorDuo: false },
++        volumeBarStyle   = { barColor: 'white', barColorDuo: false },
++        explicitStyle    = { iconColor: 'white', iconOpacity: 48 },
++    } = {},
++    isExplicit      = false,
++    backgroundColor = 'black',
++}) => {
++    if (artistName.length > 28) artistName = artistName.substring(0, 25) + '...';
++    if (trackName.length  > 28) trackName  = trackName.substring(0, 25)  + '...';
++
++    const structure = generateSvg(MeltPortraitBS({
++        isExplicit,
++        progressBar,
++        progressBarStyle,
++        volumeBar,
++        volumeBarStyle,
++        backgroundColor,
++        explicitColor:   explicitStyle.iconColor,
++        explicitOpacity: (explicitStyle.iconOpacity || 48) / 100,
++    }));
++
++    const canvas  = createCanvas(W, H);
++    const context = canvas.getContext('2d');
++
++    // Melt: solid background, SVG drawn first (no blur layer)
++    context.drawImage(await loadImage(structure), 0, 0);
++
++    let artImage;
++    try {
++        artImage = await loadImage(await cropImage({ imagePath: albumArt,    width: ART_SZ, height: ART_SZ, borderRadius: 0 }));
++    } catch {
++        if (fallbackArt) {
++            try { artImage = await loadImage(await cropImage({ imagePath: fallbackArt, width: ART_SZ, height: ART_SZ, borderRadius: 0 })); } catch {}
++        }
++    }
++
++    if (artImage) context.drawImage(artImage, ART_PAD, ART_TOP, ART_SZ, ART_SZ);
++
++    context.textAlign    = 'left';
++    context.textBaseline = 'alphabetic';
++
++    context.font      = `${trackStyle.textItalic ? 'italic' : 'normal'} 800 52px ${GlobalFonts}`;
++    context.fillStyle = trackStyle.textColor || 'white';
++    if (trackStyle.textGlow) {
++        context.shadowColor = trackStyle.textColor || 'white';
++        context.shadowBlur = 40; context.shadowOffsetX = 0; context.shadowOffsetY = 0;
++    }
++    context.fillText(trackName, PAD, 974);
++
++    context.shadowColor = 'transparent'; context.shadowBlur = 0;
++    context.font        = `${artistStyle.textItalic ? 'italic' : 'normal'} 36px ${GlobalFonts}`;
++    context.fillStyle   = artistStyle.textColor || 'white';
++    if (artistStyle.textGlow) {
++        context.shadowColor = artistStyle.textColor || 'white';
++        context.shadowBlur = 30; context.shadowOffsetX = 0; context.shadowOffsetY = 0;
++    }
++    context.fillText(artistName, isExplicit ? PAD + 59 : PAD, 1040);
++
++    context.shadowColor  = 'transparent'; context.shadowBlur = 0;
++    context.font         = `${timeStyle.textItalic ? 'italic' : 'normal'} 24px ${GlobalFonts}`;
++    context.fillStyle    = timeStyle.textColor || 'white';
++    context.textBaseline = 'middle';
++    context.textAlign    = 'left';
++    context.fillText(timeStart, PAD, TIME_CY);
++    context.textAlign    = 'right';
++    context.fillText(timeEnd, W - PAD, TIME_CY);
++    context.textAlign    = 'start';
++    context.textBaseline = 'alphabetic';
++
++    return cropImage({ imagePath: canvas.toBuffer('image/png'), width: W, height: H, borderRadius: 0 });
++};
++
++export default MeltPortrait;
+diff --git a/node_modules/musicard/dist/index.d.ts b/node_modules/musicard/dist/index.d.ts
+index 2159688..920497c 100644
+--- a/node_modules/musicard/dist/index.d.ts
++++ b/node_modules/musicard/dist/index.d.ts
+@@ -5,3 +5,9 @@ export { Drift, type DriftOptions } from './Theme/Drift.js';
+ export { Haze, type HazeOptions } from './Theme/Haze.js';
+ export { Melt, type MeltOptions } from './Theme/Melt.js';
+ export { Ease, type EaseOptions } from './Theme/Ease.js';
++export { BloomPortrait, type BloomPortraitOptions } from './Theme/BloomPortrait.js';
++export { CalmPortrait, type CalmPortraitOptions } from './Theme/CalmPortrait.js';
++export { DriftPortrait, type DriftPortraitOptions } from './Theme/DriftPortrait.js';
++export { HazePortrait, type HazePortraitOptions } from './Theme/HazePortrait.js';
++export { EasePortrait, type EasePortraitOptions } from './Theme/EasePortrait.js';
++export { MeltPortrait, type MeltPortraitOptions } from './Theme/MeltPortrait.js';
+diff --git a/node_modules/musicard/dist/index.js b/node_modules/musicard/dist/index.js
+index 35427d9..0ab4b69 100644
+--- a/node_modules/musicard/dist/index.js
++++ b/node_modules/musicard/dist/index.js
+@@ -5,3 +5,9 @@ export { Drift } from './Theme/Drift.js';
+ export { Haze } from './Theme/Haze.js';
+ export { Melt } from './Theme/Melt.js';
+ export { Ease } from './Theme/Ease.js';
++export { BloomPortrait } from './Theme/BloomPortrait.js';
++export { CalmPortrait } from './Theme/CalmPortrait.js';
++export { DriftPortrait } from './Theme/DriftPortrait.js';
++export { HazePortrait } from './Theme/HazePortrait.js';
++export { EasePortrait } from './Theme/EasePortrait.js';
++export { MeltPortrait } from './Theme/MeltPortrait.js';
