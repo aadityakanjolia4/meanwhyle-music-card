@@ -29,6 +29,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     python3 \
     # sharp runtime deps
     libvips-dev \
+    # arc-journey video encoding
+    ffmpeg \
   && rm -rf /var/lib/apt/lists/*
 
 # Install Node.js 24.x via NodeSource

@@ -1,7 +1,9 @@
 import express from 'express';
 import sharp from 'sharp';
 import { initializeFonts, Bloom, Calm, Drift, Haze, Ease, Melt, BloomPortrait, CalmPortrait, DriftPortrait, HazePortrait, EasePortrait, MeltPortrait } from 'musicard';
-import mapRouter, { buildTerrainStyle, buildSatelliteTerrainStyle, build3dTerrainStyle, renderMap, clamp, compositeMarkers } from './map.js';
+import mapRouter, { buildTerrainStyle, buildSatelliteTerrainStyle, build3dTerrainStyle, renderMap, clamp, compositeMarkers, resolveMapStyle, loadImageSource, MAP_STYLES } from './map.js';
+import { planScene } from './arc.js';
+import { renderArcJourney, renderBase } from './arcVideo.js';
 import { uploadToS3 } from './s3.js';
 
 const app = express();
@@ -494,6 +496,183 @@ app.post('/user/:user_id/post/:post_id/3d-terrain-marker', async (req, res) => {
     }
 });
 
+// ─── Arc journey: animated hops between photo locations ──────────────────────
+
+class ArcError extends Error {}
+
+// buildMarker() in map.js draws a 3:4 photo in a rounded red frame with a
+// pointer below it. A client rendering the scene itself needs those numbers.
+const MARKER_BORDER  = 3;
+const MARKER_RADIUS  = 6;
+const MARKER_POINTER = 15;
+
+function parseArcRequest(body = {}) {
+    const raw = Array.isArray(body.points) ? body.points : [];
+    if (raw.length < 2)  throw new ArcError('points must contain at least 2 entries');
+    if (raw.length > 25) throw new ArcError('points is limited to 25 entries');
+
+    const points = raw.map((p, i) => {
+        const lat = parseFloat(p?.lat);
+        const lon = parseFloat(p?.lon);
+        if (!isFinite(lat) || !isFinite(lon))          throw new ArcError(`points[${i}] needs numeric lat and lon`);
+        if (lat < -90 || lat > 90)                     throw new ArcError(`points[${i}].lat must be between -90 and 90`);
+        if (lon < -180 || lon > 180)                   throw new ArcError(`points[${i}].lon must be between -180 and 180`);
+        if (typeof p.image !== 'string' || !p.image)   throw new ArcError(`points[${i}] needs an image (url, s3:// or base64)`);
+        return { lat, lon, image: p.image, label: p.label ?? null };
+    });
+
+    const mapStyle = body.map_style;
+    if (!MAP_STYLES.includes(mapStyle)) {
+        throw new ArcError(`map_style is required and must be one of: ${MAP_STYLES.join(', ')}`);
+    }
+
+    // yuv420p needs even dimensions.
+    const even = (n) => (n % 2 === 0 ? n : n - 1);
+    const canvas = {
+        width:  even(clamp(parseInt(body.width  ?? 1080), 160, 1920)),
+        height: even(clamp(parseInt(body.height ?? 1350), 160, 1920)),
+        fps:    clamp(parseInt(body.fps ?? 30), 10, 60),
+    };
+
+    const t = body.timing || {};
+    const timing = {
+        arc:  clamp(parseFloat(t.arc  ?? 1.2),  0.2, 10),
+        pop:  clamp(parseFloat(t.pop  ?? 0.35), 0.1, 5),
+        hold: clamp(parseFloat(t.hold ?? 0.5),  0,   10),
+        tail: clamp(parseFloat(t.tail ?? 1.0),  0,   10),
+    };
+
+    const a = body.arc || {};
+    const style = {
+        arc: {
+            color:  typeof a.color === 'string' ? a.color : '#E2574C',
+            width:  clamp(parseFloat(a.width ?? 4), 1, 24),
+            dash:   Array.isArray(a.dash) && a.dash.length === 2
+                ? a.dash.map((n) => clamp(parseFloat(n) || 1, 1, 100))
+                : [12, 9],
+            shadow: a.shadow !== false,
+            head: {
+                radius: clamp(parseFloat(a.head?.radius ?? 6),  1, 40),
+                glow:   clamp(parseFloat(a.head?.glow   ?? 14), 1, 80),
+            },
+        },
+        marker: {
+            size:    clamp(parseInt(body.marker_size ?? 96), 24, 400),
+            aspect:  0.75,
+            border:  MARKER_BORDER,
+            radius:  MARKER_RADIUS,
+            pointer: MARKER_POINTER,
+            anchor:  'bottom-center',
+        },
+    };
+    style.marker.height = Math.round(style.marker.size * 4 / 3) + MARKER_POINTER;
+
+    // Base map is rendered larger than the canvas so Ken Burns crops stay sharp.
+    let baseScale = clamp(parseFloat(body.base_scale ?? 1.5), 1, 3);
+    baseScale = Math.min(baseScale, 4096 / canvas.width, 4096 / canvas.height);
+
+    const scene = planScene({
+        points, canvas, timing, style, baseScale,
+        padding:   clamp(parseFloat(body.padding   ?? 90),   0, 600),
+        curvature: clamp(parseFloat(body.curvature ?? 0.25), 0, 0.8),
+        samples:   clamp(parseInt(body.samples     ?? 128),  16, 512),
+        maxZoom:   clamp(parseFloat(body.max_zoom  ?? 16),   1, 22),
+    });
+
+    return {
+        scene,
+        mapStyle,
+        exaggeration: clamp(parseFloat(body.exaggeration ?? 1), 0, 10),
+        isEox: body.is_eox === true,
+        inline: body.inline === true,
+    };
+}
+
+// POST /user/:user_id/post/:post_id/arc-journey — server-rendered MP4
+app.post('/user/:user_id/post/:post_id/arc-journey', async (req, res) => {
+    const { user_id, post_id } = req.params;
+
+    let parsed;
+    try {
+        parsed = parseArcRequest(req.body);
+    } catch (err) {
+        if (err instanceof ArcError) return res.status(400).json({ error: err.message });
+        throw err;
+    }
+
+    try {
+        const { scene, mapStyle, exaggeration, isEox, inline } = parsed;
+        const styleObj = await resolveMapStyle(mapStyle, { exaggeration, isEox });
+        const { video, poster, frames } = await renderArcJourney(scene, styleObj);
+
+        if (inline) {
+            res.set('Content-Type', 'video/mp4');
+            res.set('Content-Disposition', `inline; filename="arc-${post_id}.mp4"`);
+            return res.send(video);
+        }
+
+        const [videoUrl, posterUrl] = await Promise.all([
+            uploadToS3(video, user_id, 'video/mp4'),
+            uploadToS3(poster, user_id),
+        ]);
+
+        res.json({
+            user_id, post_id,
+            video: videoUrl,
+            poster: posterUrl,
+            duration: scene.duration,
+            frames,
+            map_style: mapStyle,
+        });
+    } catch (err) {
+        console.error('[arc-journey error]', err);
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// POST /user/:user_id/post/:post_id/arc-journey/scene — scene for on-device rendering
+app.post('/user/:user_id/post/:post_id/arc-journey/scene', async (req, res) => {
+    const { user_id, post_id } = req.params;
+
+    let parsed;
+    try {
+        parsed = parseArcRequest(req.body);
+    } catch (err) {
+        if (err instanceof ArcError) return res.status(400).json({ error: err.message });
+        throw err;
+    }
+
+    try {
+        const { scene, mapStyle, exaggeration, isEox, inline } = parsed;
+        const styleObj = await resolveMapStyle(mapStyle, { exaggeration, isEox });
+
+        const baseRaw = await renderBase(scene, styleObj);
+        const baseJpeg = await sharp(baseRaw, {
+            raw: { width: scene.base.width, height: scene.base.height, channels: 4 },
+        }).jpeg({ quality: 82 }).toBuffer();
+
+        // A phone can only fetch http(s); anything else (s3://, base64) gets
+        // republished so the scene is self-contained.
+        const images = await Promise.all(scene.points.map(async (p) => {
+            if (p.image.startsWith('http')) return p.image;
+            const buf = await loadImageSource(p.image);
+            if (!buf) return null;
+            return uploadToS3(await sharp(buf).png().toBuffer(), user_id);
+        }));
+
+        scene.points.forEach((p, i) => { p.image = images[i]; });
+
+        scene.base.url = inline
+            ? `data:image/jpeg;base64,${baseJpeg.toString('base64')}`
+            : await uploadToS3(baseJpeg, user_id, 'image/jpeg');
+
+        res.json({ user_id, post_id, map_style: mapStyle, ...scene });
+    } catch (err) {
+        console.error('[arc-journey/scene error]', err);
+        res.status(500).json({ error: err.message });
+    }
+});
+
 // Map routes
 app.use(mapRouter);
 
@@ -515,6 +694,8 @@ app.use((_req, res) => {
             'POST /user/:user_id/post/:post_id/terrain-marker',
             'POST /user/:user_id/post/:post_id/satellite-terrain-marker',
             'POST /user/:user_id/post/:post_id/3d-terrain-marker',
+            'POST /user/:user_id/post/:post_id/arc-journey        (MP4 of arcs hopping between photo locations)',
+            'POST /user/:user_id/post/:post_id/arc-journey/scene  (same scene as JSON, for on-device rendering)',
             'GET  /health',
             'GET  /render?lat=&lon=&zoom=&width=&height=&bearing=&pitch=&format=&quality=',
             'POST /render  (JSON body with same params + optional style)',
