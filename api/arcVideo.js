@@ -26,12 +26,12 @@ export async function renderBase(scene, styleObj) {
 // ─── Photo pins ──────────────────────────────────────────────────────────────
 
 export async function prepareMarkers(scene) {
-    const size = scene.style.marker.size;
+    const { size, pointer } = scene.style.marker;
     return Promise.all(scene.points.map(async (p) => {
         const img = await loadImageSource(p.image);
         if (!img) return null;
         try {
-            return await buildMarker(img, size);
+            return await buildMarker(img, size, pointer);
         } catch (err) {
             console.warn(`[arc] marker ${p.index} failed: ${err.message} — skipping`);
             return null;

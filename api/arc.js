@@ -37,8 +37,13 @@ export function fitView(points, width, height, padding = 0, maxZoom = 16) {
 
     const spanX = Math.max(maxX - minX, 1e-9);
     const spanY = Math.max(maxY - minY, 1e-9);
-    const availW = Math.max(width  - padding * 2, 1);
-    const availH = Math.max(height - padding * 2, 1);
+
+    // Never let padding consume the frame — at 50% per side the fit collapses
+    // to zoom 0 and renders the whole world.
+    const padX = Math.min(padding, width  * 0.35);
+    const padY = Math.min(padding, height * 0.35);
+    const availW = Math.max(width  - padX * 2, 1);
+    const availH = Math.max(height - padY * 2, 1);
 
     const worldSize = Math.min(availW / spanX, availH / spanY);
     const zoom = clamp(Math.log2(worldSize / TILE), 0, maxZoom);
@@ -116,7 +121,6 @@ export function buildArcGeometry(a, b, { view, width, height, curvature, samples
     for (let i = 1; i < pts.length; i++) {
         cumulative.push(cumulative[i - 1] + Math.hypot(pts[i].x - pts[i - 1].x, pts[i].y - pts[i - 1].y));
     }
-    const length = cumulative[cumulative.length - 1];
 
     // Quadratic control point matching the same mid-path displacement.
     const mid = { x: (first.x + last.x) / 2, y: (first.y + last.y) / 2 };
@@ -125,7 +129,12 @@ export function buildArcGeometry(a, b, { view, width, height, curvature, samples
     const coords = pts.map((p) => [round(p.x), round(p.y)]);
     const svgPath = 'M' + coords.map(([x, y]) => `${x},${y}`).join('L');
 
-    return { points: coords, cumulative, length: round(length), control, svgPath };
+    // Round the running lengths and take `length` from the last of them. A
+    // rounded length over raw cumulative values would leave the final slice
+    // interpolating toward a target that never quite reaches the end point.
+    const rounded = cumulative.map((v) => round(v));
+
+    return { points: coords, cumulative: rounded, length: rounded[rounded.length - 1], control, svgPath };
 }
 
 // Slice a sampled path at progress t (0..1 of its length).
@@ -178,23 +187,34 @@ export function buildTimeline(count, timing) {
 // A camera rect covering `subset`, aspect-locked to the canvas, never smaller
 // than the canvas (which would upscale the base) and always inside the base.
 function rectFor(subset, opts) {
-    const { canvasW, canvasH, baseW, baseH, padding, zoomOut = 1 } = opts;
+    const { canvasW, canvasH, baseW, baseH, padding, zoomOut = 1, pinW = 0, pinH = 0 } = opts;
     const aspect = canvasW / canvasH;
 
-    const minX = Math.min(...subset.map((p) => p.x)) - padding;
-    const maxX = Math.max(...subset.map((p) => p.x)) + padding;
-    const minY = Math.min(...subset.map((p) => p.y)) - padding;
-    const maxY = Math.max(...subset.map((p) => p.y)) + padding;
+    const minX = Math.min(...subset.map((p) => p.x));
+    const maxX = Math.max(...subset.map((p) => p.x));
+    const minY = Math.min(...subset.map((p) => p.y));
+    const maxY = Math.max(...subset.map((p) => p.y));
 
-    let w = (maxX - minX) * zoomOut;
-    let h = (maxY - minY) * zoomOut;
+    // A pin is drawn at a fixed canvas size, anchored on its point and rising
+    // above it, so its footprint in base pixels is (pin / canvas) * rect — it
+    // grows as the camera pulls back. Solving w >= spanX + fx*w + 2*padding for
+    // w (and likewise h) gives a rect that still contains the pins once scaled.
+    const fx = clamp(pinW / canvasW, 0, 0.9);
+    const fy = clamp(pinH / canvasH, 0, 0.9);
+
+    let w = (((maxX - minX) + padding * 2) / (1 - fx)) * zoomOut;
+    let h = (((maxY - minY) + padding * 2) / (1 - fy)) * zoomOut;
     if (w / h < aspect) w = h * aspect; else h = w / aspect;
 
     if (w < canvasW) { w = canvasW; h = canvasH; }
     if (w > baseW)   { w = baseW;  h = baseW / aspect; }
     if (h > baseH)   { h = baseH;  w = baseH * aspect; }
 
-    const cx = (minX + maxX) / 2, cy = (minY + maxY) / 2;
+    // Pins extend sideways symmetrically but only upward, so the rect sits
+    // half a pin height above the anchors' midpoint.
+    const cx = (minX + maxX) / 2;
+    const cy = (minY + maxY) / 2 - (fy * h) / 2;
+
     return {
         x: round(clamp(cx - w / 2, 0, Math.max(0, baseW - w))),
         y: round(clamp(cy - h / 2, 0, Math.max(0, baseH - h))),
@@ -258,7 +278,8 @@ export function planScene(opts) {
     const baseH = Math.round(canvas.height * baseScale);
     const basePad = padding * baseScale;
 
-    const view   = fitView(points, baseW, baseH, basePad, maxZoom);
+    const pinPad = (Math.max(style.marker.size, style.marker.height) * baseScale) / 2;
+    const view   = fitView(points, baseW, baseH, basePad + pinPad, maxZoom);
     const pixels = points.map((p) => projectPoint(p.lat, p.lon, view, baseW, baseH));
     const timeline = buildTimeline(points.length, timing);
 
@@ -272,6 +293,7 @@ export function planScene(opts) {
 
     const camera = buildCamera(pixels, timeline, {
         canvasW: canvas.width, canvasH: canvas.height, baseW, baseH, padding: basePad,
+        pinW: style.marker.size, pinH: style.marker.height,
     });
 
     return {
@@ -282,6 +304,7 @@ export function planScene(opts) {
         base: { width: baseW, height: baseH, center: view.center, zoom: round(view.zoom, 4), scale: baseScale },
         points: points.map((p, i) => ({
             index: i,
+            id: p.id ?? i,
             lat: p.lat,
             lon: p.lon,
             x: round(pixels[i].x),

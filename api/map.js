@@ -262,11 +262,14 @@ export async function loadImageSource(src) {
     }
 }
 
-export async function buildMarker(imageBuf, markerWidth = 120) {
+// `pointerHeight` defaults to the historical fixed 15px so existing callers
+// render identically; the arc journey passes a value proportional to the pin
+// width, so that scaling a pin up scales all of it.
+export async function buildMarker(imageBuf, markerWidth = 120, pointerHeight = 15) {
     const markerHeight = Math.round(markerWidth * 4 / 3); // 3:4 ratio
     const border       = 3;
     const radius       = 6;
-    const pointerH     = 15;
+    const pointerH     = pointerHeight;
     const totalHeight  = markerHeight + pointerH;
     const innerW       = markerWidth  - border * 2;
     const innerH       = markerHeight - border * 2;
@@ -289,8 +292,8 @@ export async function buildMarker(imageBuf, markerWidth = 120) {
         `<svg width="${markerWidth}" height="${totalHeight}" xmlns="http://www.w3.org/2000/svg">
             <rect x="1.5" y="1.5" width="${markerWidth - 3}" height="${markerHeight - 3}"
                   rx="${radius}" fill="none" stroke="red" stroke-width="3"/>
-            <polygon points="${cx - 12},${markerHeight} ${cx + 12},${markerHeight} ${cx},${totalHeight}" fill="red"/>
-            <polygon points="${cx - 9},${markerHeight} ${cx + 9},${markerHeight} ${cx},${markerHeight + 12}" fill="white"/>
+            <polygon points="${cx - pointerH * 0.8},${markerHeight} ${cx + pointerH * 0.8},${markerHeight} ${cx},${totalHeight}" fill="red"/>
+            <polygon points="${cx - pointerH * 0.6},${markerHeight} ${cx + pointerH * 0.6},${markerHeight} ${cx},${markerHeight + pointerH * 0.8}" fill="white"/>
         </svg>`
     )).png().toBuffer();
 

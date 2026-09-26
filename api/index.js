@@ -5,6 +5,8 @@ import mapRouter, { buildTerrainStyle, buildSatelliteTerrainStyle, build3dTerrai
 import { planScene } from './arc.js';
 import { renderArcJourney, renderBase } from './arcVideo.js';
 import { uploadToS3 } from './s3.js';
+import { buildImageGeoData } from './geo.js';
+import { saveGeoData, mediaIdOf } from './meanwhyle.js';
 
 const app = express();
 app.use(express.json({ limit: '2mb' }));
@@ -425,12 +427,17 @@ async function handleTerrainMarkerPost(req, res, styleFn) {
         let mapPng = await sharp(mapRaw, { raw: { width: mapWidth, height: mapHeight, channels: 4 } }).png().toBuffer();
         mapPng = await compositeMarkers(mapPng, Array.isArray(markers) ? markers : [], { lat: parseFloat(lat), lon: parseFloat(lon), zoom: mapZoom, width: mapWidth, height: mapHeight });
 
-        const uploads = await Promise.all([
-            uploadToS3(mapPng, user_id),
-            cardBuffer ? uploadToS3(cardBuffer, user_id) : null,
+        const markerList = Array.isArray(markers) ? markers : [];
+        const [uploads, imageGeoData] = await Promise.all([
+            Promise.all([
+                uploadToS3(mapPng, user_id),
+                cardBuffer ? uploadToS3(cardBuffer, user_id) : null,
+            ]),
+            buildImageGeoData(markerList)
+                .then((geo) => saveGeoData({ userId: user_id, postId: post_id, source: 'terrain_marker', points: markerList, geo }).then(() => geo)),
         ]);
 
-        const response = { user_id, post_id, map: uploads[0] };
+        const response = { user_id, post_id, map: uploads[0], image_geo_data: imageGeoData };
         if (uploads[1]) response.card = uploads[1];
 
         res.json(response);
@@ -483,12 +490,17 @@ app.post('/user/:user_id/post/:post_id/3d-terrain-marker', async (req, res) => {
         let mapPng = await sharp(mapRaw, { raw: { width: mapWidth, height: mapHeight, channels: 4 } }).png().toBuffer();
         mapPng = await compositeMarkers(mapPng, Array.isArray(markers) ? markers : [], { lat: parseFloat(lat), lon: parseFloat(lon), zoom: mapZoom, width: mapWidth, height: mapHeight });
 
-        const uploads = await Promise.all([
-            uploadToS3(mapPng, user_id),
-            cardBuffer ? uploadToS3(cardBuffer, user_id) : null,
+        const markerList = Array.isArray(markers) ? markers : [];
+        const [uploads, imageGeoData] = await Promise.all([
+            Promise.all([
+                uploadToS3(mapPng, user_id),
+                cardBuffer ? uploadToS3(cardBuffer, user_id) : null,
+            ]),
+            buildImageGeoData(markerList)
+                .then((geo) => saveGeoData({ userId: user_id, postId: post_id, source: 'terrain_marker', points: markerList, geo }).then(() => geo)),
         ]);
 
-        const response = { user_id, post_id, map: uploads[0], card_theme: theme };
+        const response = { user_id, post_id, map: uploads[0], card_theme: theme, image_geo_data: imageGeoData };
         if (uploads[1]) response.card = uploads[1];
         res.json(response);
     } catch (err) {
@@ -504,7 +516,11 @@ class ArcError extends Error {}
 // pointer below it. A client rendering the scene itself needs those numbers.
 const MARKER_BORDER  = 3;
 const MARKER_RADIUS  = 6;
-const MARKER_POINTER = 15;
+// 15px at the 96px default; proportional so a scaled-up request (an export at
+// twice the preview's size) is the same pin, not a differently shaped one.
+const MARKER_POINTER_RATIO = 15 / 96;
+const MARKER_COLOR         = '#FF0000';
+const MARKER_POINTER_INNER = '#FFFFFF';
 
 function parseArcRequest(body = {}) {
     const raw = Array.isArray(body.points) ? body.points : [];
@@ -518,7 +534,13 @@ function parseArcRequest(body = {}) {
         if (lat < -90 || lat > 90)                     throw new ArcError(`points[${i}].lat must be between -90 and 90`);
         if (lon < -180 || lon > 180)                   throw new ArcError(`points[${i}].lon must be between -180 and 180`);
         if (typeof p.image !== 'string' || !p.image)   throw new ArcError(`points[${i}] needs an image (url, s3:// or base64)`);
-        return { lat, lon, image: p.image, label: p.label ?? null };
+        return {
+            lat, lon, image: p.image, label: p.label ?? null,
+            id: p.id ?? p.image_id ?? i,
+            media_id: mediaIdOf(p),
+            // When the photo was taken, so its weather is for that hour.
+            taken_at: p.taken_at ?? null,
+        };
     });
 
     const mapStyle = body.map_style;
@@ -542,6 +564,9 @@ function parseArcRequest(body = {}) {
         tail: clamp(parseFloat(t.tail ?? 1.0),  0,   10),
     };
 
+    const markerSize    = clamp(parseInt(body.marker_size ?? 96), 24, 400);
+    const markerPointer = Math.max(4, Math.round(markerSize * MARKER_POINTER_RATIO));
+
     const a = body.arc || {};
     const style = {
         arc: {
@@ -557,15 +582,17 @@ function parseArcRequest(body = {}) {
             },
         },
         marker: {
-            size:    clamp(parseInt(body.marker_size ?? 96), 24, 400),
+            size:    markerSize,
             aspect:  0.75,
             border:  MARKER_BORDER,
             radius:  MARKER_RADIUS,
-            pointer: MARKER_POINTER,
+            pointer: markerPointer,
             anchor:  'bottom-center',
+            color:        MARKER_COLOR,
+            pointerInner: MARKER_POINTER_INNER,
         },
     };
-    style.marker.height = Math.round(style.marker.size * 4 / 3) + MARKER_POINTER;
+    style.marker.height = Math.round(style.marker.size * 4 / 3) + markerPointer;
 
     // Base map is rendered larger than the canvas so Ken Burns crops stay sharp.
     let baseScale = clamp(parseFloat(body.base_scale ?? 1.5), 1, 3);
@@ -581,11 +608,22 @@ function parseArcRequest(body = {}) {
 
     return {
         scene,
+        points,
         mapStyle,
         exaggeration: clamp(parseFloat(body.exaggeration ?? 1), 0, 10),
         isEox: body.is_eox === true,
         inline: body.inline === true,
     };
+}
+
+// Place + weather per point (weather for each point's taken_at), stored in
+// meanwhyle against its media id. Resolves to image_geo_data; never rejects
+// over the save.
+function geoAndSave(points, userId, postId) {
+    return buildImageGeoData(points).then(async (geo) => {
+        await saveGeoData({ userId, postId, source: 'arc_journey', points, geo });
+        return geo;
+    });
 }
 
 // POST /user/:user_id/post/:post_id/arc-journey — server-rendered MP4
@@ -601,19 +639,22 @@ app.post('/user/:user_id/post/:post_id/arc-journey', async (req, res) => {
     }
 
     try {
-        const { scene, mapStyle, exaggeration, isEox, inline } = parsed;
+        const { scene, points, mapStyle, exaggeration, isEox, inline } = parsed;
+        const geoPromise = geoAndSave(points, user_id, post_id);
         const styleObj = await resolveMapStyle(mapStyle, { exaggeration, isEox });
         const { video, poster, frames } = await renderArcJourney(scene, styleObj);
 
         if (inline) {
+            await geoPromise;   // an inline caller never sees the geo data, but meanwhyle still stores it
             res.set('Content-Type', 'video/mp4');
             res.set('Content-Disposition', `inline; filename="arc-${post_id}.mp4"`);
             return res.send(video);
         }
 
-        const [videoUrl, posterUrl] = await Promise.all([
+        const [videoUrl, posterUrl, imageGeoData] = await Promise.all([
             uploadToS3(video, user_id, 'video/mp4'),
             uploadToS3(poster, user_id),
+            geoPromise,
         ]);
 
         res.json({
@@ -623,6 +664,7 @@ app.post('/user/:user_id/post/:post_id/arc-journey', async (req, res) => {
             duration: scene.duration,
             frames,
             map_style: mapStyle,
+            image_geo_data: imageGeoData,
         });
     } catch (err) {
         console.error('[arc-journey error]', err);
@@ -643,7 +685,8 @@ app.post('/user/:user_id/post/:post_id/arc-journey/scene', async (req, res) => {
     }
 
     try {
-        const { scene, mapStyle, exaggeration, isEox, inline } = parsed;
+        const { scene, points, mapStyle, exaggeration, isEox, inline } = parsed;
+        const geoPromise = geoAndSave(points, user_id, post_id);
         const styleObj = await resolveMapStyle(mapStyle, { exaggeration, isEox });
 
         const baseRaw = await renderBase(scene, styleObj);
@@ -666,7 +709,7 @@ app.post('/user/:user_id/post/:post_id/arc-journey/scene', async (req, res) => {
             ? `data:image/jpeg;base64,${baseJpeg.toString('base64')}`
             : await uploadToS3(baseJpeg, user_id, 'image/jpeg');
 
-        res.json({ user_id, post_id, map_style: mapStyle, ...scene });
+        res.json({ user_id, post_id, map_style: mapStyle, ...scene, image_geo_data: await geoPromise });
     } catch (err) {
         console.error('[arc-journey/scene error]', err);
         res.status(500).json({ error: err.message });
