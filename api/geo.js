@@ -10,7 +10,7 @@ import { fetchWeather, EMPTY_WEATHER } from './weather.js';
 const BASE_URL   = (process.env.NOMINATIM_BASE_URL || 'https://nominatim.openstreetmap.org').replace(/\/+$/, '');
 const USER_AGENT = process.env.NOMINATIM_USER_AGENT || 'music_card/1.0 (+https://meanwhyle-music-card.onrender.com)';
 const MIN_GAP_MS = parseInt(process.env.NOMINATIM_MIN_GAP_MS || '1100', 10);
-const TIMEOUT_MS = parseInt(process.env.NOMINATIM_TIMEOUT_MS || '5000', 10);
+const TIMEOUT_MS = parseInt(process.env.NOMINATIM_TIMEOUT_MS || '10000', 10);
 const CACHE_MAX  = 5000;
 
 // ~1.1 m of precision — fine enough that two photos of the same spot share an entry.
