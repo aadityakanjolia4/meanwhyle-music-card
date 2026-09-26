@@ -14,6 +14,10 @@ const ARCHIVE_URL = (process.env.OPEN_METEO_ARCHIVE_URL || 'https://archive-api.
 const RECENT_DAYS = parseInt(process.env.OPEN_METEO_RECENT_DAYS || '85', 10);   // forecast API keeps 92
 const TIMEOUT_MS = parseInt(process.env.OPEN_METEO_TIMEOUT_MS || '10000', 10);
 const TTL_MS     = parseInt(process.env.OPEN_METEO_TTL_MS || '600000', 10);   // 10 min
+// Every outgoing call is logged. On unless OPEN_METEO_DEBUG says otherwise:
+// 1/true/yes/on enable it, 0/false/no/off quiet it, unset defaults to on.
+const DEBUG      = ['1', 'true', 'yes', 'on'].includes(
+    (process.env.OPEN_METEO_DEBUG ?? 'true').trim().toLowerCase());
 const BATCH_MAX  = 50;                                                        // keep the query string sane
 const CACHE_MAX  = 5000;
 
@@ -145,13 +149,34 @@ async function fetchBatch(coords, range = null) {
     url.searchParams.set('timezone', 'GMT');
     url.searchParams.set('timeformat', 'unixtime');
 
+    if (DEBUG) console.log(`[weather] GET ${url}`);
+
+    const started = Date.now();
     const res = await fetch(url, {
         headers: { Accept: 'application/json' },
         signal: AbortSignal.timeout(TIMEOUT_MS),
     });
-    if (!res.ok) throw new Error(`Open-Meteo responded ${res.status}`);
+
+    if (!res.ok) {
+        // Open-Meteo explains itself in the body ({"error":true,"reason":"…"});
+        // the status alone rarely says which parameter it objected to.
+        const body = await res.text().catch(() => '');
+        let reason = body.trim();
+        try { reason = JSON.parse(body).reason ?? reason; } catch { /* not JSON */ }
+
+        const retryAfter = res.headers.get('retry-after');
+        const err = new Error(
+            `HTTP ${res.status} ${res.statusText}`
+            + (reason ? ` — ${reason.slice(0, 300)}` : '')
+            + (retryAfter ? ` (retry-after: ${retryAfter})` : '')
+        );
+        err.status = res.status;
+        err.url = String(url);
+        throw err;
+    }
 
     const json = await res.json();
+    if (DEBUG) console.log(`[weather] ${res.status} in ${Date.now() - started}ms for ${coords.length} location(s)`);
     // A single coordinate comes back as an object, several as an array.
     return Array.isArray(json) ? json : [json];
 }
@@ -203,8 +228,12 @@ export async function fetchWeather(entries = []) {
                     v.targets.forEach((i) => { out[i] = weather; });
                 });
             } catch (err) {
-                const what = range ? `${range.date}` : 'current';
+                const what = range ? `${range.date} (${range.baseUrl.includes('archive') ? 'archive' : 'forecast'})` : 'current';
+                const where = chunk.map(([, v]) => `${v.lat},${v.lon}`).join(' ');
                 console.warn(`[weather] ${what} lookup failed for ${chunk.length} location(s): ${err.message}`);
+                console.warn(`[weather]   coords: ${where}`);
+                if (err.url) console.warn(`[weather]   url:    ${err.url}`);
+                if (!err.status) console.warn(`[weather]   cause:  ${err.name}: ${err.cause?.message ?? err.message}`);
                 // leave those entries null; the render must not fail over weather
             }
         }
