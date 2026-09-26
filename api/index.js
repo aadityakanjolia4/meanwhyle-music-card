@@ -659,11 +659,13 @@ app.post('/user/:user_id/post/:post_id/arc-journey', async (req, res) => {
 
         res.json({
             user_id, post_id,
-            video: videoUrl,
-            poster: posterUrl,
-            duration: scene.duration,
-            frames,
-            map_style: mapStyle,
+            arc_journey_data: {
+                video: videoUrl,
+                poster: posterUrl,
+                duration: scene.duration,
+                frames,
+                map_style: mapStyle,
+            },
             image_geo_data: imageGeoData,
         });
     } catch (err) {
@@ -709,7 +711,11 @@ app.post('/user/:user_id/post/:post_id/arc-journey/scene', async (req, res) => {
             ? `data:image/jpeg;base64,${baseJpeg.toString('base64')}`
             : await uploadToS3(baseJpeg, user_id, 'image/jpeg');
 
-        res.json({ user_id, post_id, map_style: mapStyle, ...scene, image_geo_data: await geoPromise });
+        res.json({
+            user_id, post_id,
+            arc_journey_data: { map_style: mapStyle, ...scene },
+            image_geo_data: await geoPromise,
+        });
     } catch (err) {
         console.error('[arc-journey/scene error]', err);
         res.status(500).json({ error: err.message });

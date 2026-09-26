@@ -6,7 +6,17 @@
 
 export type Vec2 = [number, number];
 
+// What the endpoint returns. The animation lives under `arc_journey_data`;
+// `image_geo_data` sits beside it, one entry per point, in the same order.
+export interface SceneResponse {
+  user_id: string;
+  post_id: string;
+  arc_journey_data: Scene;
+  image_geo_data: GeoEntry[];
+}
+
 export interface Scene {
+  map_style: string;
   version: number;
   duration: number;
   canvas: { width: number; height: number; fps: number };
@@ -17,7 +27,6 @@ export interface Scene {
   arcs: SceneArc[];
   camera: { easing: 'easeInOutCubic'; keyframes: Keyframe[] };
   style: SceneStyle;
-  image_geo_data?: GeoEntry[];
 }
 
 export interface ScenePoint {

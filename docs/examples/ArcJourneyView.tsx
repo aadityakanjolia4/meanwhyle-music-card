@@ -2,7 +2,8 @@
 //
 //   npm i @shopify/react-native-skia
 //
-//   const scene = await fetch(url, { method: 'POST', body: … }).then(r => r.json());
+//   const res   = await fetch(url, { method: 'POST', body: … }).then(r => r.json());
+//   const scene = res.arc_journey_data;      // res.image_geo_data holds place + weather
 //   <ArcJourneyView scene={scene} width={Dimensions.get('window').width} />
 //
 // The maths lives in arcScene.ts and is parity-tested against the server, so

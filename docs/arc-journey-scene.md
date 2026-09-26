@@ -53,52 +53,57 @@ Heights are rounded down to even numbers (H.264 `yuv420p` requires it), so
 
 ```jsonc
 {
-  "user_id": "123", "post_id": "456", "map_style": "terrain",
-  "version": 1,
-  "duration": 5.45,                     // seconds, total
-  "canvas": { "width": 720, "height": 900, "fps": 30 },
-  "timing":  { "arc": 1.2, "pop": 0.35, "hold": 0.5, "tail": 1 },
+  "user_id": "123", "post_id": "456",
 
-  "base": {                             // the map image everything is positioned against
-    "url": "https://meanwhyl.s3.amazonaws.com/uploads/123/<uuid>.jpg",
-    "width": 1080, "height": 1350,      // NOT the canvas size — 1.5x by default
-    "center": { "lon": 76.9147, "lat": 27.7665 },
-    "zoom": 7.5368, "scale": 1.5
-  },
+  // Everything that describes the animation lives here.
+  "arc_journey_data": {
+    "map_style": "terrain",
+    "version": 1,
+    "duration": 5.45,                     // seconds, total
+    "canvas": { "width": 720, "height": 900, "fps": 30 },
+    "timing":  { "arc": 1.2, "pop": 0.35, "hold": 0.5, "tail": 1 },
 
-  "points": [{
-    "index": 0, "id": "photo_8842",
-    "lat": 28.6139, "lon": 77.2090,
-    "x": 617.73, "y": 421.07,           // BASE-image pixels, the pin's anchor
-    "image": "https://cdn/delhi.jpg",
-    "label": "Delhi",
-    "appearAt": 0,                      // seconds
-    "popDuration": 0.35,
-    "popEasing": "easeOutBack"
-  }],
+    "base": {                             // the map image everything is positioned against
+      "url": "https://meanwhyl.s3.amazonaws.com/uploads/123/<uuid>.jpg",
+      "width": 1080, "height": 1350,      // NOT the canvas size — 1.5x by default
+      "center": { "lon": 76.9147, "lat": 27.7665 },
+      "zoom": 7.5368, "scale": 1.5
+    },
 
-  "arcs": [{
-    "from": 0, "to": 1,                 // indexes into points[]
-    "startAt": 0.35, "duration": 1.2,   // seconds
-    "points": [[617.73, 421.07], …],    // 128 samples, BASE-image pixels
-    "cumulative": [0, 6.2, 12.4, …],    // running length at each sample
-    "length": 498.2,                    // total, base px
-    "control": { "x": 610.2, "y": 512.8 },   // quadratic control point, if you'd rather curve than sample
-    "svgPath": "M617.73,421.07L618.4,…",     // same polyline as an SVG path string
-    "km": 179.7                         // real-world distance, for captions
-  }],
+    "points": [{
+      "index": 0, "id": "photo_8842",
+      "lat": 28.6139, "lon": 77.2090,
+      "x": 617.73, "y": 421.07,           // BASE-image pixels, the pin's anchor
+      "image": "https://cdn/delhi.jpg",
+      "label": "Delhi",
+      "appearAt": 0,                      // seconds
+      "popDuration": 0.35,
+      "popEasing": "easeOutBack"
+    }],
 
-  "camera": {
-    "easing": "easeInOutCubic",
-    "keyframes": [ { "t": 0, "x": 229.73, "y": 0, "w": 720, "h": 900 }, … ]
-  },
+    "arcs": [{
+      "from": 0, "to": 1,                 // indexes into points[]
+      "startAt": 0.35, "duration": 1.2,   // seconds
+      "points": [[617.73, 421.07], …],    // 128 samples, BASE-image pixels
+      "cumulative": [0, 6.2, 12.4, …],    // running length at each sample
+      "length": 498.2,                    // total, base px
+      "control": { "x": 610.2, "y": 512.8 },   // quadratic control point, if you'd rather curve than sample
+      "svgPath": "M617.73,421.07L618.4,…",     // same polyline as an SVG path string
+      "km": 179.7                         // real-world distance, for captions
+    }],
 
-  "style": {
-    "arc":    { "color": "#E2574C", "width": 4, "dash": [12, 9], "shadow": true,
-                "head": { "radius": 6, "glow": 14 } },
-    "marker": { "size": 96, "height": 143, "aspect": 0.75, "border": 3, "radius": 6,
-                "pointer": 15, "anchor": "bottom-center",
-                "color": "#FF0000", "pointerInner": "#FFFFFF" }
+    "camera": {
+      "easing": "easeInOutCubic",
+      "keyframes": [ { "t": 0, "x": 229.73, "y": 0, "w": 720, "h": 900 }, … ]
+    },
+
+    "style": {
+      "arc":    { "color": "#E2574C", "width": 4, "dash": [12, 9], "shadow": true,
+                  "head": { "radius": 6, "glow": 14 } },
+      "marker": { "size": 96, "height": 143, "aspect": 0.75, "border": 3, "radius": 6,
+                  "pointer": 15, "anchor": "bottom-center",
+                  "color": "#FF0000", "pointerInner": "#FFFFFF" }
+    }
   },
 
   "image_geo_data": [                   // reverse geocoded, one per point, same order
