@@ -38,8 +38,17 @@ export async function getFromS3(url) {
     return Buffer.from(bytes);
 }
 
+const EXTENSIONS = {
+    'image/png':  'png',
+    'image/jpeg': 'jpg',
+    'image/webp': 'webp',
+    'image/gif':  'gif',
+    'video/mp4':  'mp4',
+};
+
 export async function uploadToS3(buffer, userId, contentType = 'image/png') {
-    const key = `${FOLDER}/${userId}/${randomUUID()}.png`;
+    const ext = EXTENSIONS[contentType] ?? 'bin';
+    const key = `${FOLDER}/${userId}/${randomUUID()}.${ext}`;
     await s3.send(new PutObjectCommand({
         Bucket:      BUCKET,
         Key:         key,

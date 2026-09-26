@@ -233,11 +233,43 @@ function latLonToPixel(lat, lon, centerLat, centerLon, zoom, width, height) {
     };
 }
 
-async function buildMarker(imageBuf, markerWidth = 120) {
+// Fetch a marker image from an S3 URL, an http(s) URL or a base64/data URI.
+// Returns null (and logs) instead of throwing, so one bad photo never fails a render.
+export async function loadImageSource(src) {
+    if (typeof src !== 'string' || src.length === 0) return null;
+    try {
+        if (isS3Url(src)) return await getFromS3(src);
+
+        if (src.startsWith('http')) {
+            const resp = await fetch(src);
+            if (!resp.ok) {
+                console.warn(`[image] HTTP ${resp.status} for ${src} — skipping`);
+                return null;
+            }
+            const ct = resp.headers.get('content-type') || '';
+            if (!ct.startsWith('image/')) {
+                console.warn(`[image] Non-image content-type "${ct}" for ${src} — skipping`);
+                return null;
+            }
+            return Buffer.from(await resp.arrayBuffer());
+        }
+
+        const b64 = src.includes(',') ? src.split(',')[1] : src;
+        return Buffer.from(b64, 'base64');
+    } catch (err) {
+        console.warn(`[image] Failed to fetch: ${err.message} — skipping`);
+        return null;
+    }
+}
+
+// `pointerHeight` defaults to the historical fixed 15px so existing callers
+// render identically; the arc journey passes a value proportional to the pin
+// width, so that scaling a pin up scales all of it.
+export async function buildMarker(imageBuf, markerWidth = 120, pointerHeight = 15) {
     const markerHeight = Math.round(markerWidth * 4 / 3); // 3:4 ratio
     const border       = 3;
     const radius       = 6;
-    const pointerH     = 15;
+    const pointerH     = pointerHeight;
     const totalHeight  = markerHeight + pointerH;
     const innerW       = markerWidth  - border * 2;
     const innerH       = markerHeight - border * 2;
@@ -260,8 +292,8 @@ async function buildMarker(imageBuf, markerWidth = 120) {
         `<svg width="${markerWidth}" height="${totalHeight}" xmlns="http://www.w3.org/2000/svg">
             <rect x="1.5" y="1.5" width="${markerWidth - 3}" height="${markerHeight - 3}"
                   rx="${radius}" fill="none" stroke="red" stroke-width="3"/>
-            <polygon points="${cx - 12},${markerHeight} ${cx + 12},${markerHeight} ${cx},${totalHeight}" fill="red"/>
-            <polygon points="${cx - 9},${markerHeight} ${cx + 9},${markerHeight} ${cx},${markerHeight + 12}" fill="white"/>
+            <polygon points="${cx - pointerH * 0.8},${markerHeight} ${cx + pointerH * 0.8},${markerHeight} ${cx},${totalHeight}" fill="red"/>
+            <polygon points="${cx - pointerH * 0.6},${markerHeight} ${cx + pointerH * 0.6},${markerHeight} ${cx},${markerHeight + pointerH * 0.8}" fill="white"/>
         </svg>`
     )).png().toBuffer();
 
@@ -293,30 +325,8 @@ export async function compositeMarkers(mapPng, markers, { lat: centerLat, lon: c
 
         if (x < 0 || x >= width || y < 0 || y >= height) continue;
 
-        let imageBuf;
-        try {
-            if (isS3Url(marker.image)) {
-                imageBuf = await getFromS3(marker.image);
-            } else if (marker.image.startsWith('http')) {
-                const resp = await fetch(marker.image);
-                if (!resp.ok) {
-                    console.warn(`[marker] HTTP ${resp.status} for ${marker.image} — skipping`);
-                    continue;
-                }
-                const ct = resp.headers.get('content-type') || '';
-                if (!ct.startsWith('image/')) {
-                    console.warn(`[marker] Non-image content-type "${ct}" for ${marker.image} — skipping`);
-                    continue;
-                }
-                imageBuf = Buffer.from(await resp.arrayBuffer());
-            } else {
-                const b64 = marker.image.includes(',') ? marker.image.split(',')[1] : marker.image;
-                imageBuf = Buffer.from(b64, 'base64');
-            }
-        } catch (err) {
-            console.warn(`[marker] Failed to fetch image: ${err.message} — skipping`);
-            continue;
-        }
+        const imageBuf = await loadImageSource(marker.image);
+        if (!imageBuf) continue;
 
         let markerBuf, mw, mh;
         try {
@@ -335,6 +345,21 @@ export async function compositeMarkers(mapPng, markers, { lat: centerLat, lon: c
 
     if (composites.length === 0) return mapPng;
     return sharp(mapPng).composite(composites).png().toBuffer();
+}
+
+// ─── Style resolution by name ────────────────────────────────────────────────
+
+export const MAP_STYLES = ['basic', 'terrain', 'satellite-terrain', '3d-terrain'];
+
+// Returns a style promise, or null when the name is not one we know.
+export function resolveMapStyle(name, { exaggeration = 1, isEox = false } = {}) {
+    switch (name) {
+        case 'basic':             return Promise.resolve(DEFAULT_STYLE);
+        case 'terrain':           return buildTerrainStyle(exaggeration);
+        case 'satellite-terrain': return buildSatelliteTerrainStyle(exaggeration);
+        case '3d-terrain':        return build3dTerrainStyle(exaggeration, isEox);
+        default:                  return null;
+    }
 }
 
 // ─── Shared terrain render handler ───────────────────────────────────────────
