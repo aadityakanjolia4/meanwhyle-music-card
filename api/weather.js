@@ -12,7 +12,7 @@
 const BASE_URL    = (process.env.OPEN_METEO_BASE_URL || 'https://api.open-meteo.com/v1/forecast').replace(/\/+$/, '');
 const ARCHIVE_URL = (process.env.OPEN_METEO_ARCHIVE_URL || 'https://archive-api.open-meteo.com/v1/archive').replace(/\/+$/, '');
 const RECENT_DAYS = parseInt(process.env.OPEN_METEO_RECENT_DAYS || '85', 10);   // forecast API keeps 92
-const TIMEOUT_MS = parseInt(process.env.OPEN_METEO_TIMEOUT_MS || '5000', 10);
+const TIMEOUT_MS = parseInt(process.env.OPEN_METEO_TIMEOUT_MS || '10000', 10);
 const TTL_MS     = parseInt(process.env.OPEN_METEO_TTL_MS || '600000', 10);   // 10 min
 const BATCH_MAX  = 50;                                                        // keep the query string sane
 const CACHE_MAX  = 5000;
