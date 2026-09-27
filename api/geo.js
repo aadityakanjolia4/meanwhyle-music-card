@@ -9,8 +9,12 @@ import { fetchWeatherOne, EMPTY_WEATHER } from './weather.js';
 
 const BASE_URL   = (process.env.NOMINATIM_BASE_URL || 'https://nominatim.openstreetmap.org').replace(/\/+$/, '');
 const USER_AGENT = process.env.NOMINATIM_USER_AGENT || 'music_card/1.0 (+https://meanwhyle-music-card.onrender.com)';
-const MIN_GAP_MS = parseInt(process.env.NOMINATIM_MIN_GAP_MS || '1100', 10);
+const MIN_GAP_MS = parseInt(process.env.NOMINATIM_MIN_GAP_MS || '1200', 10);
 const TIMEOUT_MS = parseInt(process.env.NOMINATIM_TIMEOUT_MS || '10000', 10);
+// Every call is logged. On unless NOMINATIM_DEBUG says otherwise:
+// 1/true/yes/on enable it, 0/false/no/off quiet it, unset defaults to on.
+const DEBUG      = ['1', 'true', 'yes', 'on'].includes(
+    (process.env.NOMINATIM_DEBUG ?? 'true').trim().toLowerCase());
 const CACHE_MAX  = 5000;
 
 // ~1.1 m of precision — fine enough that two photos of the same spot share an entry.
@@ -53,13 +57,28 @@ async function fetchNominatim(lat, lon, { poi }) {
     url.searchParams.set('format', 'jsonv2');
     if (poi) url.searchParams.set('layer', 'poi');
 
+    if (DEBUG) console.log(`[geo] GET ${url}`);
+
+    const started = Date.now();
     const res = await fetch(url, {
         headers: { 'User-Agent': USER_AGENT, 'Accept': 'application/json' },
         signal: AbortSignal.timeout(TIMEOUT_MS),
     });
-    if (!res.ok) throw new Error(`Nominatim responded ${res.status}`);
+    const ms = Date.now() - started;
+
+    if (!res.ok) {
+        // Nominatim explains a block or a bad request in the body; the status alone does not.
+        const body = (await res.text().catch(() => '')).trim();
+        const err = new Error(`HTTP ${res.status} ${res.statusText}`
+            + (body ? ` — ${body.replace(/\s+/g, ' ').slice(0, 300)}` : ''));
+        err.status = res.status;
+        err.url = String(url);
+        err.ms = ms;
+        throw err;
+    }
 
     const json = await res.json();
+    if (DEBUG) console.log(`[geo] ${res.status} in ${ms}ms — ${json?.error ? `no match (${json.error})` : (json?.display_name ?? 'no display_name')}`);
     return json && json.error ? null : json;
 }
 
@@ -96,8 +115,12 @@ export async function reverseGeocode(lat, lon) {
 
     const key = cacheKey(latNum, lonNum);
     const hit = cacheGet(key);
-    if (hit !== undefined) return hit;
+    if (hit !== undefined) {
+        if (DEBUG) console.log(`[geo] cache hit ${key}`);
+        return hit;
+    }
 
+    const startedAll = Date.now();
     const pending = schedule(async () => {
         // layer=poi gives the nearest named place, but returns nothing away from
         // one — fall back to the plain lookup so rural photos still get an address.
@@ -106,6 +129,8 @@ export async function reverseGeocode(lat, lon) {
         return shape(json);
     }).catch((err) => {
         console.warn(`[geo] reverse lookup failed for ${key}: ${err.message}`);
+        if (err.url) console.warn(`[geo]   url:   ${err.url}`);
+        if (!err.status) console.warn(`[geo]   cause: ${err.name}: ${err.cause?.message ?? err.message}`);
         cache.delete(key);   // transient failure — let the next request retry
         return null;
     });
@@ -113,6 +138,7 @@ export async function reverseGeocode(lat, lon) {
     cacheSet(key, pending);
     const result = await pending;
     if (cacheGet(key) !== undefined) cacheSet(key, result);
+    if (DEBUG) console.log(`[geo] result ${key} in ${Date.now() - startedAll}ms — ${JSON.stringify(result)}`);
     return result;
 }
 
