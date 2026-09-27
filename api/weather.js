@@ -1,9 +1,9 @@
 // Weather per photo, via Open-Meteo.
 //
 // A photo that carries `taken_at` gets the hourly conditions for the hour it
-// was taken; one without it falls back to the current conditions. Open-Meteo
-// accepts comma-separated coordinates and answers with one result per
-// location, so each group of photos resolves in a single call.
+// was taken; one without it falls back to the current conditions. Each photo
+// gets its own call, so one bad coordinate or date can only null that photo's
+// weather, never its neighbours'.
 //
 // Recent hours come from the forecast API (it keeps ~3 months of past data);
 // anything older goes to the historical archive (ERA5), which lags by ~5 days
@@ -18,7 +18,6 @@ const TTL_MS     = parseInt(process.env.OPEN_METEO_TTL_MS || '600000', 10);   //
 // 1/true/yes/on enable it, 0/false/no/off quiet it, unset defaults to on.
 const DEBUG      = ['1', 'true', 'yes', 'on'].includes(
     (process.env.OPEN_METEO_DEBUG ?? 'true').trim().toLowerCase());
-const BATCH_MAX  = 50;                                                        // keep the query string sane
 const CACHE_MAX  = 5000;
 
 const FIELDS = [
@@ -131,7 +130,8 @@ function parseTakenAt(value) {
     return Math.floor(ms / HOUR_MS) * HOUR_MS;
 }
 
-// One call for up to BATCH_MAX coordinates; returns results in request order.
+// One call for one coordinate. (The endpoint accepts several, but we ask for
+// them one at a time so a bad coordinate can only fail its own photo.)
 // `range` switches from current conditions to the hourly series of one UTC day.
 async function fetchBatch(coords, range = null) {
     const url = new URL(range ? range.baseUrl : BASE_URL);
@@ -181,63 +181,44 @@ async function fetchBatch(coords, range = null) {
     return Array.isArray(json) ? json : [json];
 }
 
+// One photo, one call. Returns its weather, or null when it cannot be resolved.
+export async function fetchWeatherOne(entry) {
+    const lat = parseFloat(entry?.lat);
+    const lon = parseFloat(entry?.lon);
+    if (!isFinite(lat) || !isFinite(lon)) return null;
+
+    const hourMs = parseTakenAt(entry?.taken_at);
+    const key = cacheKey(lat, lon, hourMs);
+    const hit = cacheGet(key);
+    if (hit !== undefined) return hit;
+
+    // No taken_at: current conditions. Otherwise the hourly series of that UTC
+    // day, from the forecast API while it still holds the date, else the archive.
+    let range = null;
+    if (hourMs !== null) {
+        const recent = Date.now() - hourMs < RECENT_DAYS * 24 * HOUR_MS;
+        range = { date: new Date(hourMs).toISOString().slice(0, 10), baseUrl: recent ? BASE_URL : ARCHIVE_URL };
+    }
+
+    try {
+        const [result] = await fetchBatch([{ lat, lon, hourMs }], range);
+        const weather = range ? shapeHour(result, hourMs) : shapeCurrent(result);
+        if (weather) cacheSet(key, weather);
+        return weather;
+    } catch (err) {
+        const what = range ? `${range.date} (${range.baseUrl.includes('archive') ? 'archive' : 'forecast'})` : 'current';
+        console.warn(`[weather] ${what} lookup failed for ${lat},${lon}: ${err.message}`);
+        if (err.url) console.warn(`[weather]   url:   ${err.url}`);
+        if (!err.status) console.warn(`[weather]   cause: ${err.name}: ${err.cause?.message ?? err.message}`);
+        return null;   // one photo's weather, not the whole render
+    }
+}
+
 // Resolves weather for a list of {lat, lon, taken_at?}, aligned with the input.
-// Entries that cannot be resolved come back as null.
+// One call per photo, in order.
 export async function fetchWeather(entries = []) {
     const list = Array.isArray(entries) ? entries : [];
-    const out = new Array(list.length).fill(null);
-
-    // Group what the cache cannot answer by the request that will fetch it:
-    // "current", or one (API, UTC day) pair per distinct day of photos.
-    const groups = new Map();
-    list.forEach((e, i) => {
-        const lat = parseFloat(e?.lat);
-        const lon = parseFloat(e?.lon);
-        if (!isFinite(lat) || !isFinite(lon)) return;
-
-        const hourMs = parseTakenAt(e?.taken_at);
-        const key = cacheKey(lat, lon, hourMs);
-        const hit = cacheGet(key);
-        if (hit !== undefined) { out[i] = hit; return; }
-
-        let groupKey = 'current';
-        let range = null;
-        if (hourMs !== null) {
-            const date = new Date(hourMs).toISOString().slice(0, 10);
-            const recent = Date.now() - hourMs < RECENT_DAYS * 24 * HOUR_MS;
-            range = { date, baseUrl: recent ? BASE_URL : ARCHIVE_URL };
-            groupKey = `${range.baseUrl}|${date}`;
-        }
-        if (!groups.has(groupKey)) groups.set(groupKey, { range, byKey: new Map() });
-
-        // Distinct coordinates only — repeated locations share one slot in the call.
-        const byKey = groups.get(groupKey).byKey;
-        if (!byKey.has(key)) byKey.set(key, { lat, lon, hourMs, targets: [] });
-        byKey.get(key).targets.push(i);
-    });
-
-    await Promise.all([...groups.values()].map(async ({ range, byKey }) => {
-        const unique = [...byKey.entries()];
-        for (let start = 0; start < unique.length; start += BATCH_MAX) {
-            const chunk = unique.slice(start, start + BATCH_MAX);
-            try {
-                const results = await fetchBatch(chunk.map(([, v]) => v), range);
-                chunk.forEach(([key, v], n) => {
-                    const weather = range ? shapeHour(results[n], v.hourMs) : shapeCurrent(results[n]);
-                    if (weather) cacheSet(key, weather);
-                    v.targets.forEach((i) => { out[i] = weather; });
-                });
-            } catch (err) {
-                const what = range ? `${range.date} (${range.baseUrl.includes('archive') ? 'archive' : 'forecast'})` : 'current';
-                const where = chunk.map(([, v]) => `${v.lat},${v.lon}`).join(' ');
-                console.warn(`[weather] ${what} lookup failed for ${chunk.length} location(s): ${err.message}`);
-                console.warn(`[weather]   coords: ${where}`);
-                if (err.url) console.warn(`[weather]   url:    ${err.url}`);
-                if (!err.status) console.warn(`[weather]   cause:  ${err.name}: ${err.cause?.message ?? err.message}`);
-                // leave those entries null; the render must not fail over weather
-            }
-        }
-    }));
-
+    const out = [];
+    for (const entry of list) out.push(await fetchWeatherOne(entry));
     return out;
 }
