@@ -176,7 +176,7 @@ async function fetchBatch(coords, range = null) {
     }
 
     const json = await res.json();
-    if (DEBUG) console.log(`[weather] ${res.status} in ${Date.now() - started}ms for ${coords.length} location(s)`);
+    if (DEBUG) console.log(`[weather] ${res.status} in ${Date.now() - started}ms`);
     // A single coordinate comes back as an object, several as an array.
     return Array.isArray(json) ? json : [json];
 }
@@ -190,7 +190,12 @@ export async function fetchWeatherOne(entry) {
     const hourMs = parseTakenAt(entry?.taken_at);
     const key = cacheKey(lat, lon, hourMs);
     const hit = cacheGet(key);
-    if (hit !== undefined) return hit;
+    if (hit !== undefined) {
+        if (DEBUG) console.log(`[weather] cache hit ${key}`);
+        return hit;
+    }
+
+    const startedAll = Date.now();
 
     // No taken_at: current conditions. Otherwise the hourly series of that UTC
     // day, from the forecast API while it still holds the date, else the archive.
@@ -204,6 +209,7 @@ export async function fetchWeatherOne(entry) {
         const [result] = await fetchBatch([{ lat, lon, hourMs }], range);
         const weather = range ? shapeHour(result, hourMs) : shapeCurrent(result);
         if (weather) cacheSet(key, weather);
+        if (DEBUG) console.log(`[weather] result ${key} in ${Date.now() - startedAll}ms — ${JSON.stringify(weather)}`);
         return weather;
     } catch (err) {
         const what = range ? `${range.date} (${range.baseUrl.includes('archive') ? 'archive' : 'forecast'})` : 'current';
