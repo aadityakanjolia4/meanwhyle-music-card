@@ -5,7 +5,7 @@
 // queue and results are cached by rounded coordinate. A failed lookup yields
 // null for that photo rather than failing the whole render.
 
-import { fetchWeather, EMPTY_WEATHER } from './weather.js';
+import { fetchWeatherOne, EMPTY_WEATHER } from './weather.js';
 
 const BASE_URL   = (process.env.NOMINATIM_BASE_URL || 'https://nominatim.openstreetmap.org').replace(/\/+$/, '');
 const USER_AGENT = process.env.NOMINATIM_USER_AGENT || 'music_card/1.0 (+https://meanwhyle-music-card.onrender.com)';
@@ -127,17 +127,21 @@ const EMPTY_PLACE = {
 // with the input.
 export async function buildImageGeoData(entries = []) {
     const list = Array.isArray(entries) ? entries : [];
+    const out = [];
 
-    // Geocoding is serialized at 1 req/s; weather is one batched call. Run both
-    // families concurrently so the slower one sets the pace.
-    const [places, weather] = await Promise.all([
-        Promise.all(list.map((e) => reverseGeocode(e?.lat, e?.lon))),
-        fetchWeather(list),
-    ]);
+    // One photo at a time, one call to each service for it. The two services are
+    // independent, so a photo's place and weather are fetched together.
+    for (const [i, entry] of list.entries()) {
+        const [place, weather] = await Promise.all([
+            reverseGeocode(entry?.lat, entry?.lon),
+            fetchWeatherOne(entry),
+        ]);
+        out.push({
+            id: entry?.id ?? i,
+            ...(place || EMPTY_PLACE),
+            weather: weather || EMPTY_WEATHER,
+        });
+    }
 
-    return list.map((entry, i) => ({
-        id: entry?.id ?? i,
-        ...(places[i] || EMPTY_PLACE),
-        weather: weather[i] || EMPTY_WEATHER,
-    }));
+    return out;
 }
