@@ -94,8 +94,12 @@ async function call(path, params) {
         let reason = body.trim();
         try { reason = JSON.parse(body).error?.message ?? reason; } catch { /* not JSON */ }
 
+        let code = null;
+        try { code = JSON.parse(body).error?.code ?? null; } catch { /* not JSON */ }
+
         const err = new Error(`HTTP ${res.status} ${res.statusText}` + (reason ? ` — ${reason.slice(0, 300)}` : ''));
         err.status = res.status;
+        err.notFound = code === 1006 || /no matching location/i.test(reason);
         err.url = safeUrl;
         throw err;
     }
@@ -160,11 +164,17 @@ export async function fetchWeatherOne(entry) {
             console.log(`[weather] FETCHED ${key} (${weather.basis}) in ${took}ms — ${weather.temperature}°C, feels ${weather.apparent_temperature}°C, ${weather.description}, humidity ${weather.relative_humidity}%, wind ${weather.wind_speed}km/h`);
             if (DEBUG) console.log(`[weather]   mapped: ${JSON.stringify(weather)}`);
         } else {
-            console.warn(`[weather] NOT FETCHED ${key} in ${took}ms — the response carried no usable reading`);
+            console.log(`[weather] no reading for ${key} (${took}ms) — leaving it blank`);
         }
         return weather;
     } catch (err) {
-        console.warn(`[weather] NOT FETCHED ${key} (${hourMs === null ? 'current' : 'history'}) in ${Date.now() - startedAll}ms — ${err.message}`);
+        const took = Date.now() - startedAll;
+        if (err.notFound) {
+            // Not a fault: the service simply has nothing for this coordinate.
+            console.log(`[weather] no reading for ${key} (${took}ms) — leaving it blank`);
+            return null;
+        }
+        console.warn(`[weather] NOT FETCHED ${key} (${hourMs === null ? 'current' : 'history'}) in ${took}ms — ${err.message}`);
         if (err.url) console.warn(`[weather]   url:   ${err.url}`);
         if (!err.status) console.warn(`[weather]   cause: ${err.name}: ${err.cause?.message ?? err.message}`);
         return null;   // one photo's weather, not the whole render

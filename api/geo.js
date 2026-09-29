@@ -15,6 +15,9 @@ const TIMEOUT_MS = parseInt(process.env.NOMINATIM_TIMEOUT_MS || '10000', 10);
 // 1/true/yes/on enable it, 0/false/no/off quiet it, unset defaults to on.
 const DEBUG      = ['1', 'true', 'yes', 'on'].includes(
     (process.env.NOMINATIM_DEBUG ?? 'true').trim().toLowerCase());
+// After a 429 the whole queue holds off this long, so a burst that tripped the
+// limit does not immediately trip it again.
+const COOLDOWN_MS = parseInt(process.env.NOMINATIM_COOLDOWN_MS || '60000', 10);
 const CACHE_MAX  = 5000;
 
 // ~1.1 m of precision — fine enough that two photos of the same spot share an entry.
@@ -35,14 +38,21 @@ function cacheSet(key, value) {
     while (cache.size > CACHE_MAX) cache.delete(cache.keys().next().value);
 }
 
-// Serializes live requests and spaces them MIN_GAP_MS apart.
+// Serializes live requests and spaces them MIN_GAP_MS apart. Every HTTP request
+// goes through here — not every lookup, because one lookup can need two requests
+// (the POI attempt and its fallback), and those must be spaced too.
 let queue = Promise.resolve();
 let lastCallAt = 0;
+let penaltyUntil = 0;
 
 function schedule(task) {
     const run = queue.then(async () => {
-        const wait = lastCallAt + MIN_GAP_MS - Date.now();
-        if (wait > 0) await new Promise((r) => setTimeout(r, wait));
+        const readyAt = Math.max(lastCallAt + MIN_GAP_MS, penaltyUntil);
+        const wait = readyAt - Date.now();
+        if (wait > 0) {
+            if (DEBUG && penaltyUntil > Date.now()) console.log(`[geo] cooling down, waiting ${wait}ms`);
+            await new Promise((r) => setTimeout(r, wait));
+        }
         lastCallAt = Date.now();
         return task();
     });
@@ -67,10 +77,19 @@ async function fetchNominatim(lat, lon, { poi }) {
     const ms = Date.now() - started;
 
     if (!res.ok) {
+        if (res.status === 429 || res.status === 403) {
+            penaltyUntil = Date.now() + COOLDOWN_MS;
+            console.warn(`[geo] rate limited (${res.status}) — pausing lookups for ${COOLDOWN_MS}ms`);
+        }
         // Nominatim explains a block or a bad request in the body; the status alone does not.
         const body = (await res.text().catch(() => '')).trim();
+        // Nominatim answers a block with a full HTML page; strip it to its text.
+        const reason = body.startsWith('<')
+            ? (body.match(/<h1>([^<]+)<\/h1>/i)?.[1] ?? '').trim()
+              + (body.match(/<h3>([^<]+)<\/h3>/i)?.[1] ? ` (${body.match(/<h3>([^<]+)<\/h3>/i)[1].trim()})` : '')
+            : body.replace(/\s+/g, ' ');
         const err = new Error(`HTTP ${res.status} ${res.statusText}`
-            + (body ? ` — ${body.replace(/\s+/g, ' ').slice(0, 300)}` : ''));
+            + (reason ? ` — ${reason.slice(0, 300)}` : ''));
         err.status = res.status;
         err.url = String(url);
         err.ms = ms;
@@ -128,13 +147,14 @@ export async function reverseGeocode(lat, lon) {
     }
 
     const startedAll = Date.now();
+    let failed = false;   // an error already explained itself; don't also call it "no match"
     const pending = schedule(async () => {
-        // layer=poi gives the nearest named place, but returns nothing away from
-        // one — fall back to the plain lookup so rural photos still get an address.
-        let json = await fetchNominatim(latNum, lonNum, { poi: true });
-        if (!json) json = await fetchNominatim(latNum, lonNum, { poi: false });
+        // layer=poi gives the nearest named place. Away from one it returns nothing,
+        // and that is fine — a photo with no named place nearby simply has none.
+        const json = await fetchNominatim(latNum, lonNum, { poi: true });
         return shape(json);
     }).catch((err) => {
+        failed = true;
         console.warn(`[geo] NOT FETCHED ${key} in ${Date.now() - startedAll}ms — ${err.message}`);
         if (err.url) console.warn(`[geo]   url:   ${err.url}`);
         if (!err.status) console.warn(`[geo]   cause: ${err.name}: ${err.cause?.message ?? err.message}`);
@@ -150,8 +170,8 @@ export async function reverseGeocode(lat, lon) {
     if (result) {
         console.log(`[geo] FETCHED ${key} in ${took}ms — ${result.display_name}`);
         if (DEBUG) console.log(`[geo]   mapped: ${JSON.stringify(result)}`);
-    } else {
-        console.warn(`[geo] NOT FETCHED ${key} in ${took}ms — no place matches these coordinates`);
+    } else if (!failed) {
+        console.log(`[geo] no place near ${key} (${took}ms) — leaving it blank`);
     }
     return result;
 }
