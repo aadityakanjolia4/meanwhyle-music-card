@@ -6,6 +6,7 @@
 // null for that photo rather than failing the whole render.
 
 import { fetchWeatherOne, EMPTY_WEATHER } from './weather.js';
+import { describeNetworkError } from './netError.js';
 
 const BASE_URL   = (process.env.NOMINATIM_BASE_URL || 'https://nominatim.openstreetmap.org').replace(/\/+$/, '');
 const USER_AGENT = process.env.NOMINATIM_USER_AGENT || 'music_card/1.0 (+https://meanwhyle-music-card.onrender.com)';
@@ -157,7 +158,7 @@ export async function reverseGeocode(lat, lon) {
         failed = true;
         console.warn(`[geo] NOT FETCHED ${key} in ${Date.now() - startedAll}ms — ${err.message}`);
         if (err.url) console.warn(`[geo]   url:   ${err.url}`);
-        if (!err.status) console.warn(`[geo]   cause: ${err.name}: ${err.cause?.message ?? err.message}`);
+        if (!err.status) console.warn(`[geo]   cause: ${describeNetworkError(err)}`);
         cache.delete(key);   // transient failure — let the next request retry
         return null;
     });

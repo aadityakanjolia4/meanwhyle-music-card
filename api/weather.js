@@ -5,6 +5,8 @@
 // Each photo gets its own call, so one bad coordinate or date can only null that
 // photo's weather, never its neighbours'.
 
+import { describeNetworkError } from './netError.js';
+
 const BASE_URL   = (process.env.WEATHERAPI_BASE_URL || 'https://api.weatherapi.com/v1').replace(/\/+$/, '');
 const API_KEY    = (process.env.WEATHERAPI_KEY || '').trim();
 const TIMEOUT_MS = parseInt(process.env.WEATHERAPI_TIMEOUT_MS || '10000', 10);
@@ -176,7 +178,7 @@ export async function fetchWeatherOne(entry) {
         }
         console.warn(`[weather] NOT FETCHED ${key} (${hourMs === null ? 'current' : 'history'}) in ${took}ms — ${err.message}`);
         if (err.url) console.warn(`[weather]   url:   ${err.url}`);
-        if (!err.status) console.warn(`[weather]   cause: ${err.name}: ${err.cause?.message ?? err.message}`);
+        if (!err.status) console.warn(`[weather]   cause: ${describeNetworkError(err)}`);
         return null;   // one photo's weather, not the whole render
     }
 }
