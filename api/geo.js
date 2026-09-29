@@ -78,7 +78,10 @@ async function fetchNominatim(lat, lon, { poi }) {
     }
 
     const json = await res.json();
-    if (DEBUG) console.log(`[geo] ${res.status} in ${ms}ms — ${json?.error ? `no match (${json.error})` : (json?.display_name ?? 'no display_name')}`);
+    if (DEBUG) {
+        const raw = JSON.stringify(json);
+        console.log(`[geo] ${res.status} in ${ms}ms — raw: ${raw.length > 2000 ? `${raw.slice(0, 2000)}… (${raw.length} chars)` : raw}`);
+    }
     return json && json.error ? null : json;
 }
 
@@ -111,13 +114,17 @@ function shape(json) {
 export async function reverseGeocode(lat, lon) {
     const latNum = parseFloat(lat);
     const lonNum = parseFloat(lon);
-    if (!isFinite(latNum) || !isFinite(lonNum)) return null;
+    if (!isFinite(latNum) || !isFinite(lonNum)) {
+        console.warn(`[geo] NOT FETCHED ${lat},${lon} — lat/lon is missing or not a number`);
+        return null;
+    }
 
     const key = cacheKey(latNum, lonNum);
     const hit = cacheGet(key);
     if (hit !== undefined) {
-        if (DEBUG) console.log(`[geo] cache hit ${key}`);
-        return hit;
+        const place = await hit;
+        console.log(`[geo] FETCHED ${key} from cache — ${place?.display_name ?? 'no match'}`);
+        return place;
     }
 
     const startedAll = Date.now();
@@ -128,7 +135,7 @@ export async function reverseGeocode(lat, lon) {
         if (!json) json = await fetchNominatim(latNum, lonNum, { poi: false });
         return shape(json);
     }).catch((err) => {
-        console.warn(`[geo] reverse lookup failed for ${key}: ${err.message}`);
+        console.warn(`[geo] NOT FETCHED ${key} in ${Date.now() - startedAll}ms — ${err.message}`);
         if (err.url) console.warn(`[geo]   url:   ${err.url}`);
         if (!err.status) console.warn(`[geo]   cause: ${err.name}: ${err.cause?.message ?? err.message}`);
         cache.delete(key);   // transient failure — let the next request retry
@@ -138,7 +145,14 @@ export async function reverseGeocode(lat, lon) {
     cacheSet(key, pending);
     const result = await pending;
     if (cacheGet(key) !== undefined) cacheSet(key, result);
-    if (DEBUG) console.log(`[geo] result ${key} in ${Date.now() - startedAll}ms — ${JSON.stringify(result)}`);
+
+    const took = Date.now() - startedAll;
+    if (result) {
+        console.log(`[geo] FETCHED ${key} in ${took}ms — ${result.display_name}`);
+        if (DEBUG) console.log(`[geo]   mapped: ${JSON.stringify(result)}`);
+    } else {
+        console.warn(`[geo] NOT FETCHED ${key} in ${took}ms — no place matches these coordinates`);
+    }
     return result;
 }
 
