@@ -101,7 +101,10 @@ async function call(path, params) {
     }
 
     const json = await res.json();
-    if (DEBUG) console.log(`[weather] ${res.status} in ${ms}ms`);
+    if (DEBUG) {
+        const raw = JSON.stringify(json);
+        console.log(`[weather] ${res.status} in ${ms}ms — raw: ${raw.length > 2000 ? `${raw.slice(0, 2000)}… (${raw.length} chars)` : raw}`);
+    }
     return json;
 }
 
@@ -109,10 +112,13 @@ async function call(path, params) {
 export async function fetchWeatherOne(entry) {
     const lat = parseFloat(entry?.lat);
     const lon = parseFloat(entry?.lon);
-    if (!isFinite(lat) || !isFinite(lon)) return null;
+    if (!isFinite(lat) || !isFinite(lon)) {
+        console.warn(`[weather] NOT FETCHED ${entry?.lat},${entry?.lon} — lat/lon is missing or not a number`);
+        return null;
+    }
 
     if (!API_KEY) {
-        console.warn('[weather] WEATHERAPI_KEY is not set — skipping weather lookup');
+        console.warn(`[weather] NOT FETCHED ${lat},${lon} — WEATHERAPI_KEY is not set`);
         return null;
     }
 
@@ -120,7 +126,7 @@ export async function fetchWeatherOne(entry) {
     const key = cacheKey(lat, lon, hourMs);
     const hit = cacheGet(key);
     if (hit !== undefined) {
-        if (DEBUG) console.log(`[weather] cache hit ${key}`);
+        console.log(`[weather] FETCHED ${key} from cache — ${hit ? `${hit.temperature}°C ${hit.description}` : 'no data'}`);
         return hit;
     }
 
@@ -148,11 +154,17 @@ export async function fetchWeatherOne(entry) {
             weather = shape(block, 'taken_at');
         }
 
-        if (weather) cacheSet(key, weather);
-        if (DEBUG) console.log(`[weather] result ${key} in ${Date.now() - startedAll}ms — ${JSON.stringify(weather)}`);
+        const took = Date.now() - startedAll;
+        if (weather) {
+            cacheSet(key, weather);
+            console.log(`[weather] FETCHED ${key} (${weather.basis}) in ${took}ms — ${weather.temperature}°C, feels ${weather.apparent_temperature}°C, ${weather.description}, humidity ${weather.relative_humidity}%, wind ${weather.wind_speed}km/h`);
+            if (DEBUG) console.log(`[weather]   mapped: ${JSON.stringify(weather)}`);
+        } else {
+            console.warn(`[weather] NOT FETCHED ${key} in ${took}ms — the response carried no usable reading`);
+        }
         return weather;
     } catch (err) {
-        console.warn(`[weather] ${hourMs === null ? 'current' : 'history'} lookup failed for ${lat},${lon}: ${err.message}`);
+        console.warn(`[weather] NOT FETCHED ${key} (${hourMs === null ? 'current' : 'history'}) in ${Date.now() - startedAll}ms — ${err.message}`);
         if (err.url) console.warn(`[weather]   url:   ${err.url}`);
         if (!err.status) console.warn(`[weather]   cause: ${err.name}: ${err.cause?.message ?? err.message}`);
         return null;   // one photo's weather, not the whole render
