@@ -18,6 +18,7 @@
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.1037.0",
+    "@aws-sdk/s3-request-presigner": "^3.1144.0",
     "@maplibre/maplibre-gl-native": "^6.0.0",
     "express": "^5.2.1",
     "musicard": "^3.0.1",
