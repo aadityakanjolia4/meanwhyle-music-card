@@ -4,7 +4,7 @@ import { initializeFonts, Bloom, Calm, Drift, Haze, Ease, Melt, BloomPortrait, C
 import mapRouter, { buildTerrainStyle, buildSatelliteTerrainStyle, build3dTerrainStyle, renderMap, clamp, compositeMarkers, resolveMapStyle, loadImageSource, MAP_STYLES } from './map.js';
 import { planScene } from './arc.js';
 import { renderArcJourney, renderBase } from './arcVideo.js';
-import { uploadToS3 } from './s3.js';
+import { uploadToS3, addSignedUrls } from './s3.js';
 import { buildImageGeoData } from './geo.js';
 import { saveGeoData, mediaIdOf } from './meanwhyle.js';
 
@@ -368,12 +368,12 @@ async function handleCompositePost(req, res, styleFn) {
             uploadToS3(cardBuffer, user_id),
         ]);
 
-        res.json({
+        res.json(await addSignedUrls({
             user_id,
             post_id,
             map:  mapUrl,
             card: cardUrl,
-        });
+        }));
     } catch (err) {
         res.status(500).json({ error: err.message });
     }
@@ -440,7 +440,7 @@ async function handleTerrainMarkerPost(req, res, styleFn) {
         const response = { user_id, post_id, map: uploads[0], image_geo_data: imageGeoData };
         if (uploads[1]) response.card = uploads[1];
 
-        res.json(response);
+        res.json(await addSignedUrls(response));
     } catch (err) {
         res.status(500).json({ error: err.message });
     }
@@ -502,7 +502,7 @@ app.post('/user/:user_id/post/:post_id/3d-terrain-marker', async (req, res) => {
 
         const response = { user_id, post_id, map: uploads[0], card_theme: theme, image_geo_data: imageGeoData };
         if (uploads[1]) response.card = uploads[1];
-        res.json(response);
+        res.json(await addSignedUrls(response));
     } catch (err) {
         res.status(500).json({ error: err.message });
     }
@@ -657,7 +657,7 @@ app.post('/user/:user_id/post/:post_id/arc-journey', async (req, res) => {
             geoPromise,
         ]);
 
-        res.json({
+        res.json(await addSignedUrls({
             user_id, post_id,
             arc_journey_data: {
                 video: videoUrl,
@@ -667,12 +667,40 @@ app.post('/user/:user_id/post/:post_id/arc-journey', async (req, res) => {
                 map_style: mapStyle,
             },
             image_geo_data: imageGeoData,
-        });
+        }));
     } catch (err) {
         console.error('[arc-journey error]', err);
         res.status(500).json({ error: err.message });
     }
 });
+
+// Renders the base map and makes every image in the scene fetchable by a
+// phone. Mutates and returns the scene as arc_journey_data.
+async function buildSceneData({ scene, mapStyle, exaggeration, isEox, inline }, userId) {
+    const styleObj = await resolveMapStyle(mapStyle, { exaggeration, isEox });
+
+    const baseRaw = await renderBase(scene, styleObj);
+    const baseJpeg = await sharp(baseRaw, {
+        raw: { width: scene.base.width, height: scene.base.height, channels: 4 },
+    }).jpeg({ quality: 82 }).toBuffer();
+
+    // A phone can only fetch http(s); anything else (s3://, base64) gets
+    // republished so the scene is self-contained.
+    const images = await Promise.all(scene.points.map(async (p) => {
+        if (p.image.startsWith('http')) return p.image;
+        const buf = await loadImageSource(p.image);
+        if (!buf) return null;
+        return uploadToS3(await sharp(buf).png().toBuffer(), userId);
+    }));
+
+    scene.points.forEach((p, i) => { p.image = images[i]; });
+
+    scene.base.url = inline
+        ? `data:image/jpeg;base64,${baseJpeg.toString('base64')}`
+        : await uploadToS3(baseJpeg, userId, 'image/jpeg');
+
+    return { map_style: mapStyle, ...scene };
+}
 
 // POST /user/:user_id/post/:post_id/arc-journey/scene — scene for on-device rendering
 app.post('/user/:user_id/post/:post_id/arc-journey/scene', async (req, res) => {
@@ -687,37 +715,55 @@ app.post('/user/:user_id/post/:post_id/arc-journey/scene', async (req, res) => {
     }
 
     try {
-        const { scene, points, mapStyle, exaggeration, isEox, inline } = parsed;
-        const geoPromise = geoAndSave(points, user_id, post_id);
-        const styleObj = await resolveMapStyle(mapStyle, { exaggeration, isEox });
+        const geoPromise = geoAndSave(parsed.points, user_id, post_id);
+        const arcJourneyData = await buildSceneData(parsed, user_id);
 
-        const baseRaw = await renderBase(scene, styleObj);
-        const baseJpeg = await sharp(baseRaw, {
-            raw: { width: scene.base.width, height: scene.base.height, channels: 4 },
-        }).jpeg({ quality: 82 }).toBuffer();
-
-        // A phone can only fetch http(s); anything else (s3://, base64) gets
-        // republished so the scene is self-contained.
-        const images = await Promise.all(scene.points.map(async (p) => {
-            if (p.image.startsWith('http')) return p.image;
-            const buf = await loadImageSource(p.image);
-            if (!buf) return null;
-            return uploadToS3(await sharp(buf).png().toBuffer(), user_id);
-        }));
-
-        scene.points.forEach((p, i) => { p.image = images[i]; });
-
-        scene.base.url = inline
-            ? `data:image/jpeg;base64,${baseJpeg.toString('base64')}`
-            : await uploadToS3(baseJpeg, user_id, 'image/jpeg');
-
-        res.json({
+        res.json(await addSignedUrls({
             user_id, post_id,
-            arc_journey_data: { map_style: mapStyle, ...scene },
+            arc_journey_data: arcJourneyData,
             image_geo_data: await geoPromise,
-        });
+        }));
     } catch (err) {
         console.error('[arc-journey/scene error]', err);
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// POST /user/:user_id/post/:post_id/journey_and_music — arc scene + music card,
+// no place or weather lookup and nothing saved to meanwhyle.
+app.post('/user/:user_id/post/:post_id/journey_and_music', async (req, res) => {
+    const { user_id, post_id } = req.params;
+    const {
+        trackName, artistName, albumArt, isExplicit,
+        timeStart, timeEnd, progressBar, volumeBar,
+        card_theme,
+    } = req.body;
+
+    let parsed;
+    try {
+        parsed = parseArcRequest(req.body);
+    } catch (err) {
+        if (err instanceof ArcError) return res.status(400).json({ error: err.message });
+        throw err;
+    }
+
+    const theme   = card_theme || 'bloom';
+    const hasCard = trackName && artistName;
+
+    try {
+        const [arcJourneyData, card] = await Promise.all([
+            buildSceneData(parsed, user_id),
+            hasCard
+                ? Promise.resolve(generateCard(theme, { trackName, artistName, albumArt, isExplicit, timeStart, timeEnd, progressBar, volumeBar }))
+                    .then((buf) => uploadToS3(buf, user_id))
+                : null,
+        ]);
+
+        const response = { user_id, post_id, arc_journey_data: arcJourneyData, card_theme: theme };
+        if (card) response.card = card;
+        res.json(await addSignedUrls(response));
+    } catch (err) {
+        console.error('[journey_and_music error]', err);
         res.status(500).json({ error: err.message });
     }
 });
@@ -745,6 +791,7 @@ app.use((_req, res) => {
             'POST /user/:user_id/post/:post_id/3d-terrain-marker',
             'POST /user/:user_id/post/:post_id/arc-journey        (MP4 of arcs hopping between photo locations)',
             'POST /user/:user_id/post/:post_id/arc-journey/scene  (same scene as JSON, for on-device rendering)',
+            'POST /user/:user_id/post/:post_id/journey_and_music  (arc scene JSON + music card, no geo/weather)',
             'GET  /health',
             'GET  /render?lat=&lon=&zoom=&width=&height=&bearing=&pitch=&format=&quality=',
             'POST /render  (JSON body with same params + optional style)',

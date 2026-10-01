@@ -8,6 +8,7 @@ the server-rendered video shows.
 |---|---|---|
 | `POST /user/:user_id/post/:post_id/arc-journey` | MP4 + poster on S3 | sharing, upload to feed, anything that needs a file |
 | `POST /user/:user_id/post/:post_id/arc-journey/scene` | JSON scene + base map image | the phone animates it live (scrubbable, interactive, no encode wait) |
+| `POST /user/:user_id/post/:post_id/journey_and_music` | JSON scene + music card PNG | same as `/scene` plus a music card; no place/weather lookup, nothing saved |
 
 The scene endpoint is the fast one: one map render, ~2 s. The MP4 endpoint
 renders every frame and encodes, ~6–20 s depending on size.
@@ -277,3 +278,31 @@ pin box goes on that coordinate, not the middle.
 - **`arcs[].svgPath`** is the same polyline as a path string, for `react-native-svg`
   or Skia's `Path.MakeFromSVGString`. Use it for a full arc; use `points` + `cumulative`
   for partial draws, since slicing a path string is harder than slicing an array.
+
+---
+
+## `journey_and_music`
+
+`POST /user/:user_id/post/:post_id/journey_and_music` takes the `/scene` request
+body plus the music card fields from `3d-terrain-marker`, and returns the same
+`arc_journey_data` alongside a card. It never geocodes or fetches weather, so there
+is no `image_geo_data`, `taken_at` is ignored, and nothing is saved to meanwhyle.
+
+```jsonc
+// request: everything from section 1, plus
+{
+  "trackName": "Song", "artistName": "Artist",   // both required for a card
+  "albumArt": "https://...jpg", "isExplicit": false,
+  "timeStart": "1:02", "timeEnd": "3:45",
+  "progressBar": 0.3, "volumeBar": 0.7,
+  "card_theme": "bloom"                          // default bloom
+}
+
+// response
+{
+  "user_id": "123", "post_id": "456",
+  "arc_journey_data": { ... },                   // identical to /scene
+  "card": "https://<s3>/....png",                // only when a card was generated
+  "card_theme": "bloom"
+}
+```
